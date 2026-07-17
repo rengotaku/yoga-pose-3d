@@ -6,7 +6,7 @@ import App from "./App";
 describe("App", () => {
   it("renders home page by default", () => {
     render(<App />);
-    expect(screen.getByText("React SPA Boilerplate")).toBeInTheDocument();
+    expect(screen.getByText("ヨガポーズ推定")).toBeInTheDocument();
   });
 
   it("navigates to users page", async () => {
@@ -31,7 +31,7 @@ describe("App", () => {
 
     await user.click(screen.getByRole("link", { name: "Home" }));
     await waitFor(() => {
-      expect(screen.getByText("React SPA Boilerplate")).toBeInTheDocument();
+      expect(screen.getByText("ヨガポーズ推定")).toBeInTheDocument();
     });
   });
 
