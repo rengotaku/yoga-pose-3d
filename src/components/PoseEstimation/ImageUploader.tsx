@@ -2,17 +2,30 @@ import React, { useRef, useState } from "react";
 import { Upload } from "lucide-react";
 import { usePoseStore } from "../../store/usePoseStore";
 
+const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
+
 export const ImageUploader: React.FC = () => {
   const [isDragging, setIsDragging] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const { setImageSrc, reset, setError } = usePoseStore();
+
+  const setImageSrc = usePoseStore((s) => s.setImageSrc);
+  const reset = usePoseStore((s) => s.reset);
+  const setError = usePoseStore((s) => s.setError);
 
   const handleFile = (file: File) => {
-    reset();
     if (!["image/jpeg", "image/png"].includes(file.type)) {
+      reset();
       setError("JPEG または PNG 形式の画像をアップロードしてください。");
       return;
     }
+
+    if (file.size > MAX_FILE_SIZE) {
+      reset();
+      setError("画像サイズは 10MB 以下にしてください。");
+      return;
+    }
+
+    reset();
 
     const reader = new FileReader();
     reader.onload = (e) => {
@@ -76,7 +89,7 @@ export const ImageUploader: React.FC = () => {
           <p className="font-semibold text-gray-700">
             クリックまたはドラッグ＆ドロップで画像をアップロード
           </p>
-          <p className="text-sm mt-1">対応フォーマット: JPG, PNG</p>
+          <p className="text-sm mt-1">対応フォーマット: JPG, PNG, 最大 10MB</p>
         </div>
       </div>
     </div>

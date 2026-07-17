@@ -12,6 +12,7 @@ vi.mock("@mediapipe/tasks-vision", () => {
     PoseLandmarker: {
       createFromOptions: vi.fn().mockResolvedValue({
         detect: vi.fn(),
+        close: vi.fn(),
       }),
     },
   };
@@ -50,6 +51,7 @@ describe("usePoseEstimation", () => {
       PoseLandmarker.createFromOptions as unknown as import("vitest").Mock
     ).mockResolvedValueOnce({
       detect: mockDetect,
+      close: vi.fn(),
     });
 
     const { result } = renderHook(() => usePoseEstimation());
@@ -83,6 +85,7 @@ describe("usePoseEstimation", () => {
       PoseLandmarker.createFromOptions as unknown as import("vitest").Mock
     ).mockResolvedValueOnce({
       detect: mockDetect,
+      close: vi.fn(),
     });
 
     const { result } = renderHook(() => usePoseEstimation());
@@ -100,5 +103,63 @@ describe("usePoseEstimation", () => {
     const state = usePoseStore.getState();
     expect(state.isError).toBe(true);
     expect(state.errorMessage).toBe("人物が検出されませんでした。");
+  });
+
+  it("should close landmarker on unmount", async () => {
+    const mockClose = vi.fn();
+    (
+      PoseLandmarker.createFromOptions as unknown as import("vitest").Mock
+    ).mockResolvedValueOnce({
+      detect: vi.fn(),
+      close: mockClose,
+    });
+
+    const { result, unmount } = renderHook(() => usePoseEstimation());
+
+    await act(async () => {
+      await result.current.initLandmarker();
+    });
+
+    unmount();
+    expect(mockClose).toHaveBeenCalled();
+  });
+
+  it("should discard older estimation result when called rapidly", async () => {
+    // Mock slow initialization
+    const mockDetect = vi.fn().mockReturnValue({
+      landmarks: [[{ x: 2, y: 2, z: 2, visibility: 1 }]],
+      worldLandmarks: [[{ x: 3, y: 3, z: 3, visibility: 1 }]],
+    });
+
+    (
+      PoseLandmarker.createFromOptions as unknown as import("vitest").Mock
+    ).mockImplementationOnce(() => {
+      return new Promise((resolve) => {
+        setTimeout(() => {
+          resolve({
+            detect: mockDetect,
+            close: vi.fn(),
+          });
+        }, 100);
+      });
+    });
+
+    const { result } = renderHook(() => usePoseEstimation());
+
+    const mockImage1 = new Image();
+    const mockImage2 = new Image();
+
+    let p1, p2;
+    await act(async () => {
+      p1 = result.current.estimatePose(mockImage1);
+      p2 = result.current.estimatePose(mockImage2);
+      await Promise.all([p1, p2]);
+    });
+
+    const state = usePoseStore.getState();
+    // mockDetect should only be called once because the first estimatePose aborted early
+    expect(mockDetect).toHaveBeenCalledTimes(1);
+    expect(mockDetect).toHaveBeenCalledWith(mockImage2);
+    expect(state.landmarks).toEqual([{ x: 2, y: 2, z: 2, visibility: 1 }]);
   });
 });

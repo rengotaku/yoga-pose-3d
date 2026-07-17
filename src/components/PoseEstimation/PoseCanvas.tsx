@@ -4,7 +4,12 @@ import { usePoseStore } from "../../store/usePoseStore";
 import { usePoseEstimation } from "../../hooks/usePoseEstimation";
 
 export const PoseCanvas: React.FC = () => {
-  const { imageSrc, landmarks, isLoading, isError, errorMessage } = usePoseStore();
+  const imageSrc = usePoseStore((s) => s.imageSrc);
+  const landmarks = usePoseStore((s) => s.landmarks);
+  const isLoading = usePoseStore((s) => s.isLoading);
+  const isError = usePoseStore((s) => s.isError);
+  const errorMessage = usePoseStore((s) => s.errorMessage);
+
   const { estimatePose } = usePoseEstimation();
 
   const imgRef = useRef<HTMLImageElement>(null);
@@ -40,7 +45,7 @@ export const PoseCanvas: React.FC = () => {
     });
   }, [landmarks]);
 
-  if (!imageSrc) return null;
+  if (!imageSrc && !isLoading && !isError) return null;
 
   return (
     <div className="mt-8">
@@ -55,23 +60,25 @@ export const PoseCanvas: React.FC = () => {
         </div>
       )}
 
-      <div className="relative inline-block w-full max-w-2xl mx-auto overflow-hidden rounded-lg shadow-lg border border-gray-200">
-        <img
-          ref={imgRef}
-          src={imageSrc}
-          alt="Uploaded for pose estimation"
-          className="block w-full h-auto object-contain"
-          onLoad={handleImageLoad}
-          crossOrigin="anonymous"
-        />
-        {landmarks && (
-          <canvas
-            ref={canvasRef}
-            className="absolute top-0 left-0 w-full h-full pointer-events-none"
-            style={{ objectFit: "contain" }}
+      {imageSrc && (
+        <div className="relative inline-block w-full max-w-2xl mx-auto overflow-hidden rounded-lg shadow-lg border border-gray-200">
+          <img
+            ref={imgRef}
+            src={imageSrc}
+            alt="Uploaded for pose estimation"
+            className="block w-full h-auto object-contain"
+            onLoad={handleImageLoad}
+            crossOrigin="anonymous"
           />
-        )}
-      </div>
+          {landmarks && (
+            <canvas
+              ref={canvasRef}
+              className="absolute top-0 left-0 w-full h-full pointer-events-none"
+              style={{ objectFit: "contain" }}
+            />
+          )}
+        </div>
+      )}
     </div>
   );
 };
