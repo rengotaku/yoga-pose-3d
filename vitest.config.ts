@@ -25,6 +25,9 @@ export default defineConfig({
         // even when not referenced by app code. Coverage is enforced via
         // shared-react-ui's gallery, not via per-template integration.
         "src/components/ui/time-picker.tsx",
+        // Three.js WebGL wrapper: cannot execute WebGLRenderer under JSDOM.
+        // Pure logic is covered by mannequin.ts unit tests.
+        "src/components/PoseViewer3D/PoseViewer3D.tsx",
       ],
     },
   },
