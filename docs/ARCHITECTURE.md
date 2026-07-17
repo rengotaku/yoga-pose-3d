@@ -34,7 +34,7 @@
 ## どこを触れば何が変わるか (Where to modify)
 
 - **3Dマネキンの見た目（色や太さ）を変えたい場合**
-  - `src/components/PoseViewer3D/PoseViewer3D.tsx` 内の `generateMannequin` 関数のマテリアル（`MeshStandardMaterial`）やジオメトリ（`SphereGeometry`, `CylinderGeometry`）の設定を変更します。
+  - `src/components/PoseViewer3D/mannequin.ts` 内の `generateMannequin` 関数のマテリアル（`MeshStandardMaterial`）やジオメトリ（`SphereGeometry`, `CylinderGeometry`）の設定を変更します。
 - **カメラの初期位置やズーム、回転の設定を変えたい場合**
   - 同様に `PoseViewer3D.tsx` 内の `PerspectiveCamera` や `OrbitControls` の設定箇所を変更します。
 - **姿勢推定モデルを変更・更新したい場合**
