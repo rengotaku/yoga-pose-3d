@@ -3,6 +3,10 @@ import userEvent from "@testing-library/user-event";
 import { describe, it, expect } from "vitest";
 import App from "./App";
 
+vi.mock("./components/PoseViewer3D", () => ({
+  PoseViewer3D: () => <div data-testid="mock-pose-viewer-3d">3D Viewer Mock</div>,
+}));
+
 describe("App", () => {
   it("renders home page by default", () => {
     render(<App />);
