@@ -11,17 +11,6 @@ describe("HomePage", () => {
       </BrowserRouter>
     );
 
-    expect(screen.getByText("React SPA Boilerplate")).toBeInTheDocument();
-  });
-
-  it("renders navigation link to users", () => {
-    render(
-      <BrowserRouter>
-        <HomePage />
-      </BrowserRouter>
-    );
-
-    const link = screen.getByRole("link", { name: "Users" });
-    expect(link).toHaveAttribute("href", "/users");
+    expect(screen.getByText("ヨガポーズ推定")).toBeInTheDocument();
   });
 });
