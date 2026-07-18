@@ -9,16 +9,26 @@ const cssColor = (value: number): string => `#${heatColor(value).color.getHexStr
  * 使用筋のヒートを一覧表示する凡例パネル。
  * 3Dボディの色（ベージュ→オレンジ→赤）と対応する。
  */
-export const MuscleLegend: React.FC<{ activations: MuscleActivation[] }> = ({
-  activations,
-}) => {
+export const MuscleLegend: React.FC<{
+  activations: MuscleActivation[];
+  selectedMuscle?: string | null;
+  onSelectMuscle?: (id: string | null) => void;
+}> = ({ activations, selectedMuscle, onSelectMuscle }) => {
   const sorted = [...activations].sort((a, b) => b.value - a.value);
   return (
     <div className="w-full rounded-lg bg-white border border-gray-200 p-3 text-xs">
       <div className="font-semibold text-gray-700 mb-2">使用筋（推定）</div>
       <ul className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-2">
         {sorted.map((m) => (
-          <li key={m.id} className="flex items-center gap-2">
+          <li
+            key={m.id}
+            onClick={() => onSelectMuscle?.(selectedMuscle === m.id ? null : m.id)}
+            className={`flex items-center gap-2 cursor-pointer p-1 -m-1 rounded-md transition-colors ${
+              selectedMuscle === m.id
+                ? "bg-gray-100 ring-1 ring-gray-200"
+                : "hover:bg-gray-50"
+            }`}
+          >
             <span
               className="inline-block w-3 h-3 rounded-sm shrink-0 border border-black/10"
               style={{ backgroundColor: cssColor(m.value) }}
