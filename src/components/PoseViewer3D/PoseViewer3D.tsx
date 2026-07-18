@@ -2,10 +2,17 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { usePoseStore } from "../../store/usePoseStore";
-import { generateMannequin } from "./mannequin";
 import { computeActivations, aggregateByMuscle } from "./muscles";
 import { MuscleLegend, type MuscleActivation } from "./MuscleLegend";
 import { calculateCameraFit } from "./cameraFit";
+import {
+  loadMannequin,
+  setupMannequinMaterials,
+  applyPoseToSkeleton,
+  applyMuscleHeatColors,
+  musclesAtFace,
+  computeSkeletonBoundingBox,
+} from "./skinnedMannequin";
 
 export const PoseViewer3D: React.FC = () => {
   const mountRef = useRef<HTMLDivElement>(null);
@@ -13,7 +20,12 @@ export const PoseViewer3D: React.FC = () => {
   const sceneRef = useRef<THREE.Scene | null>(null);
   const cameraRef = useRef<THREE.PerspectiveCamera | null>(null);
   const controlsRef = useRef<OrbitControls | null>(null);
+  const mannequinRef = useRef<THREE.Group | null>(null);
+  const initialQuaternionsRef = useRef<Map<string, THREE.Quaternion>>(new Map());
 
+  const [isLoading, setIsLoading] = useState(false);
+  const [loadError, setLoadError] = useState<Error | null>(null);
+  const [mannequinModel, setMannequinModel] = useState<THREE.Group | null>(null);
   const [selectedMuscle, setSelectedMuscle] = useState<string | null>(null);
   const [hoveredMuscles, setHoveredMuscles] = useState<{
     ids: string[];
@@ -42,7 +54,7 @@ export const PoseViewer3D: React.FC = () => {
     const width = mount.clientWidth;
     const height = mount.clientHeight;
     const camera = new THREE.PerspectiveCamera(45, width / height, 0.1, 100);
-    camera.position.set(0, 1, 3); // Slightly elevated
+    camera.position.set(0, 1, 3);
     cameraRef.current = camera;
 
     // Renderer
@@ -70,8 +82,33 @@ export const PoseViewer3D: React.FC = () => {
     const gridHelper = new THREE.GridHelper(10, 20, 0x000000, 0x000000);
     gridHelper.material.opacity = 0.1;
     gridHelper.material.transparent = true;
-    gridHelper.position.y = -1; // Lower the grid a bit so it sits below the mannequin
+    gridHelper.position.y = -1;
     scene.add(gridHelper);
+
+    // Load Mannequin
+    setIsLoading(true);
+    setLoadError(null);
+    loadMannequin("models/mannequin.glb")
+      .then((mannequin) => {
+        mannequin.name = "mannequin";
+        setupMannequinMaterials(mannequin);
+
+        mannequin.traverse((child) => {
+          if ((child as THREE.Bone).isBone) {
+            initialQuaternionsRef.current.set(child.name, child.quaternion.clone());
+          }
+        });
+
+        scene.add(mannequin);
+        mannequinRef.current = mannequin;
+        setMannequinModel(mannequin);
+        setIsLoading(false);
+      })
+      .catch((err) => {
+        console.error("Failed to load mannequin:", err);
+        setLoadError(err);
+        setIsLoading(false);
+      });
 
     // Animation Loop
     let animationFrameId: number;
@@ -100,70 +137,54 @@ export const PoseViewer3D: React.FC = () => {
       sceneRef.current = null;
       cameraRef.current = null;
       controlsRef.current = null;
+      mannequinRef.current = null;
     };
   }, []);
 
-  // Update mannequin when landmarks change
+  // Update pose and colors when landmarks or selectedMuscle change
   useEffect(() => {
-    if (!sceneRef.current) return;
-    const scene = sceneRef.current;
+    const mannequin = mannequinRef.current;
+    if (!mannequin || !worldLandmarks || worldLandmarks.length === 0) return;
 
-    // Remove old mannequin if exists
-    const oldMannequin = scene.getObjectByName("mannequin");
-    if (oldMannequin) {
-      scene.remove(oldMannequin);
-    }
+    // 1. Reset to initial pose
+    mannequin.traverse((child) => {
+      if ((child as THREE.Bone).isBone) {
+        const q = initialQuaternionsRef.current.get(child.name);
+        if (q) child.quaternion.copy(q);
+      }
+    });
 
-    if (worldLandmarks && worldLandmarks.length > 0) {
-      generateMannequin(worldLandmarks, scene);
+    // 2. Apply new pose
+    applyPoseToSkeleton(mannequin, worldLandmarks);
 
-      const newMannequin = scene.getObjectByName("mannequin");
-      if (newMannequin && cameraRef.current && controlsRef.current) {
-        const box = new THREE.Box3().setFromObject(newMannequin);
+    // Ensure world matrices are updated for bounding box computation
+    mannequin.updateMatrixWorld(true);
+
+    // 3. Apply colors
+    const acts = computeActivations(worldLandmarks);
+    let skeleton: THREE.Skeleton | undefined;
+
+    mannequin.traverse((child) => {
+      if (child instanceof THREE.SkinnedMesh) {
+        applyMuscleHeatColors(child, acts, selectedMuscle ?? undefined);
+        if (!skeleton && child.skeleton) {
+          skeleton = child.skeleton;
+        }
+      }
+    });
+
+    // 4. Update camera to fit the skeleton
+    if (skeleton && cameraRef.current && controlsRef.current) {
+      const box = computeSkeletonBoundingBox(skeleton);
+      // fallback in case box is empty
+      if (!box.isEmpty()) {
         const { position, target } = calculateCameraFit(box, cameraRef.current.fov);
         cameraRef.current.position.copy(position);
         controlsRef.current.target.copy(target);
         controlsRef.current.update();
       }
     }
-  }, [worldLandmarks]);
-
-  // Highlight selected muscle
-  useEffect(() => {
-    if (!sceneRef.current) return;
-    const mannequin = sceneRef.current.getObjectByName("mannequin");
-    if (!mannequin) return;
-
-    mannequin.traverse((child) => {
-      if (child instanceof THREE.Mesh) {
-        const meshMuscles = child.userData.muscles as string[] | undefined;
-        const mat = child.material as THREE.MeshStandardMaterial;
-
-        if (mat.userData.originalEmissiveIntensity === undefined) {
-          mat.userData.originalEmissiveIntensity = mat.emissiveIntensity;
-          mat.userData.originalOpacity = mat.opacity;
-          mat.userData.originalTransparent = mat.transparent;
-        }
-
-        if (selectedMuscle) {
-          if (meshMuscles && meshMuscles.includes(selectedMuscle)) {
-            mat.emissiveIntensity = mat.userData.originalEmissiveIntensity + 0.5;
-            mat.opacity = 1;
-            mat.transparent = mat.userData.originalTransparent;
-          } else {
-            mat.emissiveIntensity = 0;
-            mat.opacity = 0.2;
-            mat.transparent = true;
-          }
-        } else {
-          mat.emissiveIntensity = mat.userData.originalEmissiveIntensity;
-          mat.opacity = mat.userData.originalOpacity;
-          mat.transparent = mat.userData.originalTransparent;
-        }
-        mat.needsUpdate = true;
-      }
-    });
-  }, [selectedMuscle, worldLandmarks]);
+  }, [worldLandmarks, selectedMuscle, mannequinModel]);
 
   // Raycaster for hover
   useEffect(() => {
@@ -174,7 +195,7 @@ export const PoseViewer3D: React.FC = () => {
     const mouse = new THREE.Vector2();
 
     const handlePointerMove = (e: PointerEvent) => {
-      if (!cameraRef.current || !sceneRef.current) return;
+      if (!cameraRef.current || !sceneRef.current || !mannequinRef.current) return;
 
       const rect = mount.getBoundingClientRect();
       mouse.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
@@ -182,20 +203,20 @@ export const PoseViewer3D: React.FC = () => {
 
       raycaster.setFromCamera(mouse, cameraRef.current);
 
-      const mannequin = sceneRef.current.getObjectByName("mannequin");
-      if (!mannequin) {
-        setHoveredMuscles(null);
-        return;
-      }
-
-      const intersects = raycaster.intersectObject(mannequin, true);
+      const intersects = raycaster.intersectObject(mannequinRef.current, true);
       let found = false;
       for (const hit of intersects) {
-        const ids = hit.object.userData.muscles as string[] | undefined;
-        if (ids && ids.length > 0) {
-          setHoveredMuscles({ ids, x: e.clientX - rect.left, y: e.clientY - rect.top });
-          found = true;
-          break;
+        if (
+          hit.object instanceof THREE.SkinnedMesh &&
+          hit.faceIndex !== undefined &&
+          hit.faceIndex !== null
+        ) {
+          const ids = musclesAtFace(hit.object, hit.faceIndex);
+          if (ids && ids.length > 0) {
+            setHoveredMuscles({ ids, x: e.clientX - rect.left, y: e.clientY - rect.top });
+            found = true;
+            break;
+          }
         }
       }
       if (!found) {
@@ -220,13 +241,27 @@ export const PoseViewer3D: React.FC = () => {
     <div className="w-full flex flex-col gap-3">
       <div className="w-full h-full min-h-[400px] rounded-lg overflow-hidden border border-gray-200 relative">
         <div ref={mountRef} className="absolute inset-0" />
-        {!worldLandmarks && (
+
+        {isLoading && (
+          <div className="absolute inset-0 flex items-center justify-center bg-gray-50/80 pointer-events-none">
+            <p className="text-gray-500 font-medium">3Dモデルを読み込み中...</p>
+          </div>
+        )}
+
+        {loadError && !isLoading && (
+          <div className="absolute inset-0 flex items-center justify-center bg-gray-50/80 pointer-events-none">
+            <p className="text-red-500 font-medium">モデルの読み込みに失敗しました</p>
+          </div>
+        )}
+
+        {!isLoading && !loadError && !worldLandmarks && (
           <div className="absolute inset-0 flex items-center justify-center bg-gray-50/80 pointer-events-none">
             <p className="text-gray-500 font-medium">
               画像をアップロードすると3Dモデルが表示されます
             </p>
           </div>
         )}
+
         {hoveredMuscles && (
           <div
             className="absolute pointer-events-none bg-gray-900/90 text-white text-xs p-2 rounded shadow-lg transform -translate-x-1/2 -translate-y-full mt-[-10px] whitespace-nowrap z-10"
