@@ -14,6 +14,7 @@ import {
   computeSkeletonBoundingBox,
   groundMannequin,
 } from "./skinnedMannequin";
+import { applyContactIK } from "./ik";
 
 /** 床グリッドの Y 位置。マネキンの接地面もここに合わせる（#36） */
 const FLOOR_Y = -1;
@@ -165,6 +166,10 @@ export const PoseViewer3D: React.FC = () => {
     mannequin.updateMatrixWorld(true);
 
     // 2.5 Ground: スキン頂点の最下点を床グリッドへスナップ（#36）
+    groundMannequin(mannequin, FLOOR_Y);
+
+    // 2.6 接地肢の末端を 2-bone IK で床へ届かせ、めり込みを最終接地で吸収（#41）
+    applyContactIK(mannequin, worldLandmarks, FLOOR_Y);
     groundMannequin(mannequin, FLOOR_Y);
 
     // 3. Apply colors
