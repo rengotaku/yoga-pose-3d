@@ -8,6 +8,7 @@ import {
   LIMB_BONE_MAPPINGS,
   computeHipsRotation,
   distributeSpineRotation,
+  computeBackbendArchRotations,
   BONE_ALIASES,
 } from "./retarget";
 import { heatColor } from "./muscles";
@@ -170,6 +171,17 @@ export const applyPoseToSkeleton = (
         applyWorldDeltaToBone(spine2, q2);
       } else {
         applyWorldDeltaToBone(spine, q);
+      }
+    }
+
+    // 深い後屈（wheel 等）の補正: chord アラインでは前屈と区別がつかないため、
+    // 後屈検知時にテンプレートの伸展アーチを3ボーンへ追加ブレンドする（#35）。
+    if (spine && spine1 && spine2) {
+      const archQs = computeBackbendArchRotations(landmarks);
+      if (archQs) {
+        applyWorldDeltaToBone(spine, archQs[0]);
+        applyWorldDeltaToBone(spine1, archQs[1]);
+        applyWorldDeltaToBone(spine2, archQs[2]);
       }
     }
   }

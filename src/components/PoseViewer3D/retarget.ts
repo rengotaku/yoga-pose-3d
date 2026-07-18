@@ -175,6 +175,67 @@ export const computeHipsRotation = (
 };
 
 /**
+ * 後屈アーチ補正のパラメータ（#35）。
+ *
+ * MediaPipe landmarks は hip/shoulder の中点しか与えず、脊椎の「アーチ形状
+ * （chord ではなく arc）」は原理的に復元できない。そこで「腹が天井を向いている
+ * ＝後屈」をポーズ分類の手がかりにし、テンプレートの弓なりカーブをブレンドする。
+ *
+ * - bellyUpThreshold: hips 基底の belly-forward 軸(+Z)の world Y 成分がこの値を
+ *   超えたら後屈とみなす。直立・前屈・逆転(downdog/headstand)では belly 軸は
+ *   水平〜下向きになるため発火しない。仰向け寝（savasana 等）は誤発火しうるが、
+ *   静的画像のヨガポーズ推定では後屈系（wheel/bridge/fish）が支配的なので許容する。
+ * - maxArchRad: 後屈度が最大(1.0)のときの弓の曲げ角。chord アライン後の伸展を
+ *   一方向に積むと胸端が実測の肩位置から離れて丸まってしまうため、
+ *   [+A, -A, -A] の「弓」deltas で両端位置を保ったまま中間を腹側へ膨らませる。
+ *   値は e2e/poses/wheel.jpg の視覚検証で調整した。
+ */
+export const BACKBEND_ARCH = {
+  bellyUpThreshold: 0.25,
+  maxArchRad: (50 * Math.PI) / 180,
+} as const;
+
+/**
+ * 後屈度（0..1）を推定する。hips 直交基底の belly-forward 軸が world 上方を
+ * 向くほど大きい。しきい値以下は 0。sqrt で中域を持ち上げ、浅い検知値でも
+ * 視覚的に分かるアーチが出るようにしている。
+ */
+export const computeBackbendAmount = (landmarks: RawLandmark[]): number => {
+  const hipsQ = computeHipsRotation(landmarks);
+  if (!hipsQ) return 0;
+  const bellyY = new THREE.Vector3(0, 0, 1).applyQuaternion(hipsQ).y;
+  const t = BACKBEND_ARCH.bellyUpThreshold;
+  if (bellyY <= t) return 0;
+  return Math.sqrt(Math.min(1, (bellyY - t) / (1 - t)));
+};
+
+/**
+ * 後屈アーチ（弓）補正の world 回転 delta を Spine/Spine1/Spine2 の3ボーン分
+ * 計算する。後屈でなければ null。
+ *
+ * delta は [+A, -A, -A]（回転軸 = hips 基底の左右軸 +X、正角 = 腹側）。
+ * world delta は子孫にも波及するため、セグメントの chord に対する傾きは
+ * [+A, 0, -A] となり、両端の位置を保ったまま中間ノードが腹側へ L·sinA だけ
+ * 膨らむ対称な弓になる。末端（胸）セグメントは -A の伸展向きになり、
+ * 胸が開く後屈の見た目が出る。
+ */
+export const computeBackbendArchRotations = (
+  landmarks: RawLandmark[]
+): [THREE.Quaternion, THREE.Quaternion, THREE.Quaternion] | null => {
+  const amount = computeBackbendAmount(landmarks);
+  if (amount === 0) return null;
+  const hipsQ = computeHipsRotation(landmarks);
+  if (!hipsQ) return null;
+  const xAxis = new THREE.Vector3(1, 0, 0).applyQuaternion(hipsQ).normalize();
+  const A = amount * BACKBEND_ARCH.maxArchRad;
+  return [
+    new THREE.Quaternion().setFromAxisAngle(xAxis, A),
+    new THREE.Quaternion().setFromAxisAngle(xAxis, -A),
+    new THREE.Quaternion().setFromAxisAngle(xAxis, -A),
+  ];
+};
+
+/**
  * 体幹の目標回転（Quaternion）を Spine/Spine1/Spine2 の 3 ボーンに角度分配する。
  * 合成後の回転が元の targetRotation と一致するように、slerp で重み分割を行う。
  *
