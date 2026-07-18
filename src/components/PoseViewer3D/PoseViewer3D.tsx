@@ -113,6 +113,31 @@ export const PoseViewer3D: React.FC = () => {
 
         scene.add(mannequin);
         mannequinRef.current = mannequin;
+
+        // 画像未アップロード時の初期表示でもマネキン全体が枠に収まるよう、
+        // ロード直後にカメラをマネキンの bbox に合わせる（脚だけ映る問題の解消）
+        mannequin.updateMatrixWorld(true);
+        let initialSkeleton: THREE.Skeleton | undefined;
+        mannequin.traverse((child) => {
+          if (!initialSkeleton && child instanceof THREE.SkinnedMesh && child.skeleton) {
+            initialSkeleton = child.skeleton;
+          }
+        });
+        if (initialSkeleton && cameraRef.current && controlsRef.current) {
+          const box = computeSkeletonBoundingBox(initialSkeleton);
+          if (!box.isEmpty()) {
+            const { position, target } = calculateCameraFit(
+              box,
+              cameraRef.current.fov,
+              undefined,
+              cameraRef.current.aspect
+            );
+            cameraRef.current.position.copy(position);
+            controlsRef.current.target.copy(target);
+            controlsRef.current.update();
+          }
+        }
+
         setMannequinModel(mannequin);
         setIsLoading(false);
       })
@@ -132,18 +157,26 @@ export const PoseViewer3D: React.FC = () => {
     animate();
 
     // Handle Resize
+    // 親コンテナ（flex-grow）は viewport 変更以外にも layout 確定・親要素の
+    // min-h 反映などで後追いで拡大するため、window resize だけでは
+    // 初期表示のキャンバスが古い寸法（layout 前）のまま残ってしまう。
+    // ResizeObserver で mount 自体のサイズを監視して canvas を追従させる。
     const handleResize = () => {
       const w = mount.clientWidth;
       const h = mount.clientHeight;
+      if (w === 0 || h === 0) return;
       camera.aspect = w / h;
       camera.updateProjectionMatrix();
       renderer.setSize(w, h);
     };
     window.addEventListener("resize", handleResize);
+    const resizeObserver = new ResizeObserver(handleResize);
+    resizeObserver.observe(mount);
 
     return () => {
       disposed = true;
       window.removeEventListener("resize", handleResize);
+      resizeObserver.disconnect();
       cancelAnimationFrame(animationFrameId);
       mount.removeChild(renderer.domElement);
       renderer.dispose();
@@ -266,8 +299,8 @@ export const PoseViewer3D: React.FC = () => {
   }, []);
 
   return (
-    <div className="w-full flex flex-col gap-3">
-      <div className="w-full h-full min-h-[400px] rounded-lg overflow-hidden border border-gray-200 relative">
+    <div className="absolute inset-0 flex flex-col gap-3">
+      <div className="w-full flex-grow min-h-[400px] rounded-lg overflow-hidden border border-gray-200 relative">
         <div ref={mountRef} className="absolute inset-0" />
 
         {isLoading && (

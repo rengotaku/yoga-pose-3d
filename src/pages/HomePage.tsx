@@ -15,7 +15,7 @@ export function HomePage() {
           <PoseCanvas />
         </div>
 
-        <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100 flex flex-col min-h-[80vh]">
+        <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100 flex flex-col min-h-[calc(100vh-6rem)]">
           <h2 className="text-xl font-semibold mb-4">2. 3Dマネキン (360度ビュー)</h2>
           <div className="flex-grow relative">
             <PoseViewer3D />
