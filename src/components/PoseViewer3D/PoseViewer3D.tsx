@@ -12,7 +12,11 @@ import {
   applyMuscleHeatColors,
   musclesAtFace,
   computeSkeletonBoundingBox,
+  groundMannequin,
 } from "./skinnedMannequin";
+
+/** 床グリッドの Y 位置。マネキンの接地面もここに合わせる（#36） */
+const FLOOR_Y = -1;
 
 export const PoseViewer3D: React.FC = () => {
   const mountRef = useRef<HTMLDivElement>(null);
@@ -82,7 +86,7 @@ export const PoseViewer3D: React.FC = () => {
     const gridHelper = new THREE.GridHelper(10, 20, 0x000000, 0x000000);
     gridHelper.material.opacity = 0.1;
     gridHelper.material.transparent = true;
-    gridHelper.position.y = -1;
+    gridHelper.position.y = FLOOR_Y;
     scene.add(gridHelper);
 
     // Load Mannequin
@@ -159,6 +163,9 @@ export const PoseViewer3D: React.FC = () => {
 
     // Ensure world matrices are updated for bounding box computation
     mannequin.updateMatrixWorld(true);
+
+    // 2.5 Ground: スキン頂点の最下点を床グリッドへスナップ（#36）
+    groundMannequin(mannequin, FLOOR_Y);
 
     // 3. Apply colors
     const acts = computeActivations(worldLandmarks);

@@ -84,6 +84,48 @@ export const computeSkeletonBoundingBox = (skeleton: THREE.Skeleton): THREE.Box3
   return box;
 };
 
+/**
+ * root 配下の SkinnedMesh 全頂点（スキニング適用後）の world 最小 Y を返す。
+ * ボーン位置ではなく頂点を使うことで、足メッシュの肉厚分まで含めた
+ * 正確な最下点が取れる（ボーン基準だと足裏が床にめり込む）。
+ * SkinnedMesh が無い場合は null。
+ */
+export const computeLowestPointY = (root: THREE.Object3D): number | null => {
+  let minY = Infinity;
+  const v = new THREE.Vector3();
+  root.traverse((child) => {
+    if (child instanceof THREE.SkinnedMesh) {
+      const positionAttr = child.geometry.getAttribute("position");
+      // skinIndex/skinWeight が無いと getVertexPosition が例外を投げるため弾く
+      const hasSkin =
+        child.geometry.hasAttribute("skinIndex") &&
+        child.geometry.hasAttribute("skinWeight");
+      if (!positionAttr || !hasSkin) return;
+      for (let i = 0; i < positionAttr.count; i++) {
+        // getVertexPosition はスキニング適用後のメッシュローカル座標を返す
+        child.getVertexPosition(i, v);
+        v.applyMatrix4(child.matrixWorld);
+        if (v.y < minY) minY = v.y;
+      }
+    }
+  });
+  return Number.isFinite(minY) ? minY : null;
+};
+
+/**
+ * マネキンの最下点（スキン適用後の頂点）が floorY に接するよう root の
+ * Y 位置を調整する（#36 接地）。再適用で累積しないよう、毎回 Y=0 起点で
+ * 最下点を測り直してから絶対値で設定する。
+ */
+export const groundMannequin = (root: THREE.Object3D, floorY: number): void => {
+  root.position.y = 0;
+  root.updateMatrixWorld(true);
+  const minY = computeLowestPointY(root);
+  if (minY === null) return;
+  root.position.y = floorY - minY;
+  root.updateMatrixWorld(true);
+};
+
 export const applyPoseToSkeleton = (
   root: THREE.Object3D,
   landmarks: RawLandmark[]
