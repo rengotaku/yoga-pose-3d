@@ -8,14 +8,14 @@ export function HomePage() {
         ヨガポーズ推定
       </h1>
 
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+      <div className="flex flex-col gap-8">
         <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100 flex flex-col">
           <h2 className="text-xl font-semibold mb-4">1. 画像のアップロード</h2>
           <ImageUploader />
           <PoseCanvas />
         </div>
 
-        <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100 flex flex-col min-h-[500px]">
+        <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100 flex flex-col min-h-[80vh]">
           <h2 className="text-xl font-semibold mb-4">2. 3Dマネキン (360度ビュー)</h2>
           <div className="flex-grow relative">
             <PoseViewer3D />
