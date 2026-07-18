@@ -1,13 +1,22 @@
-import React, { useEffect, useRef } from "react";
+import React, { useEffect, useMemo, useRef } from "react";
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { usePoseStore } from "../../store/usePoseStore";
 import { generateMannequin } from "./mannequin";
+import { computeActivations, aggregateByMuscle } from "./muscles";
+import { MuscleLegend, type MuscleActivation } from "./MuscleLegend";
 
 export const PoseViewer3D: React.FC = () => {
   const mountRef = useRef<HTMLDivElement>(null);
   const worldLandmarks = usePoseStore((s) => s.worldLandmarks);
   const sceneRef = useRef<THREE.Scene | null>(null);
+  const muscles: MuscleActivation[] = useMemo(
+    () =>
+      worldLandmarks && worldLandmarks.length > 0
+        ? aggregateByMuscle(computeActivations(worldLandmarks))
+        : [],
+    [worldLandmarks]
+  );
 
   useEffect(() => {
     const mount = mountRef.current;
@@ -96,15 +105,18 @@ export const PoseViewer3D: React.FC = () => {
   }, [worldLandmarks]);
 
   return (
-    <div className="w-full h-full min-h-[400px] rounded-lg overflow-hidden border border-gray-200 relative">
-      <div ref={mountRef} className="absolute inset-0" />
-      {!worldLandmarks && (
-        <div className="absolute inset-0 flex items-center justify-center bg-gray-50/80 pointer-events-none">
-          <p className="text-gray-500 font-medium">
-            画像をアップロードすると3Dモデルが表示されます
-          </p>
-        </div>
-      )}
+    <div className="w-full flex flex-col gap-3">
+      <div className="w-full h-full min-h-[400px] rounded-lg overflow-hidden border border-gray-200 relative">
+        <div ref={mountRef} className="absolute inset-0" />
+        {!worldLandmarks && (
+          <div className="absolute inset-0 flex items-center justify-center bg-gray-50/80 pointer-events-none">
+            <p className="text-gray-500 font-medium">
+              画像をアップロードすると3Dモデルが表示されます
+            </p>
+          </div>
+        )}
+      </div>
+      {muscles.length > 0 && <MuscleLegend activations={muscles} />}
     </div>
   );
 };
