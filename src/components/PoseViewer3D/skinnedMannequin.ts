@@ -3,13 +3,12 @@ import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
 import {
   resolveBoneName,
   computeRotation,
-  computeHipsRotation,
   computeSpineDirection,
   computeNeckDirection,
   computeDirection,
   LIMB_BONE_MAPPINGS,
 } from "./retarget";
-import { LM, toVec, heatColor } from "./muscles";
+import { heatColor } from "./muscles";
 import type { RawLandmark, ActivationMap } from "./muscles";
 
 const NEUTRAL = 0xb98a7a;
@@ -26,168 +25,158 @@ export const loadMannequin = (url: string): Promise<THREE.Group> => {
   });
 };
 
-export const applyPoseToSkeleton = (root: THREE.Object3D, landmarks: RawLandmark[]) => {
-  root.updateMatrixWorld(true);
-
-  root.traverse((obj) => {
-    if (!(obj as THREE.Bone).isBone) return;
-    const bone = obj as THREE.Bone;
-    const name = bone.name;
-
-    // Hips
-    if (resolveBoneName("mixamorig:Hips", [name])) {
-      const q = computeHipsRotation(landmarks);
-      if (q) {
-        const parentWorldQ = bone.parent
-          ? bone.parent.getWorldQuaternion(new THREE.Quaternion())
-          : new THREE.Quaternion();
-        const localQ = parentWorldQ.clone().invert().multiply(q);
-        bone.quaternion.copy(localQ);
-        bone.updateMatrixWorld(true);
-      }
-      return;
-    }
-
-    // Spine
-    if (
-      resolveBoneName("mixamorig:Spine", [name]) ||
-      resolveBoneName("mixamorig:Spine1", [name]) ||
-      resolveBoneName("mixamorig:Spine2", [name])
-    ) {
-      const d_tgt = computeSpineDirection(landmarks);
-      if (d_tgt && bone.children.length > 0) {
-        const child = bone.children[0];
-        const childWorldPos = child.getWorldPosition(new THREE.Vector3());
-        const boneWorldPos = bone.getWorldPosition(new THREE.Vector3());
-        const d_cur = childWorldPos.sub(boneWorldPos).normalize();
-        if (d_cur.lengthSq() > 0) {
-          const q = computeRotation(d_cur, d_tgt);
-          const parentWorldQ = bone.parent
-            ? bone.parent.getWorldQuaternion(new THREE.Quaternion())
-            : new THREE.Quaternion();
-          const localQ = parentWorldQ.clone().invert().multiply(q).multiply(parentWorldQ);
-          bone.quaternion.premultiply(localQ);
-          bone.updateMatrixWorld(true);
+export const setupMannequinMaterials = (root: THREE.Object3D): void => {
+  root.traverse((child) => {
+    if (child instanceof THREE.SkinnedMesh) {
+      child.material = new THREE.MeshStandardMaterial({
+        vertexColors: true,
+        roughness: 0.55,
+        metalness: 0.05,
+      });
+      if (!child.geometry.hasAttribute("color")) {
+        const positionAttribute = child.geometry.getAttribute("position");
+        const colors = new Float32Array(positionAttribute.count * 3);
+        const c = new THREE.Color(NEUTRAL);
+        for (let i = 0; i < positionAttribute.count; i++) {
+          colors[i * 3] = c.r;
+          colors[i * 3 + 1] = c.g;
+          colors[i * 3 + 2] = c.b;
         }
-      }
-      return;
-    }
-
-    // Neck / Head
-    if (
-      resolveBoneName("mixamorig:Neck", [name]) ||
-      resolveBoneName("mixamorig:Head", [name])
-    ) {
-      const d_tgt = computeNeckDirection(landmarks);
-      if (d_tgt && bone.children.length > 0) {
-        const child = bone.children[0];
-        const childWorldPos = child.getWorldPosition(new THREE.Vector3());
-        const boneWorldPos = bone.getWorldPosition(new THREE.Vector3());
-        const d_cur = childWorldPos.sub(boneWorldPos).normalize();
-        if (d_cur.lengthSq() > 0) {
-          const q = computeRotation(d_cur, d_tgt);
-          const parentWorldQ = bone.parent
-            ? bone.parent.getWorldQuaternion(new THREE.Quaternion())
-            : new THREE.Quaternion();
-          const localQ = parentWorldQ.clone().invert().multiply(q).multiply(parentWorldQ);
-          bone.quaternion.premultiply(localQ);
-          bone.updateMatrixWorld(true);
-        }
-      }
-      return;
-    }
-
-    // Limbs
-    const mixamoName = Object.keys(LIMB_BONE_MAPPINGS).find((k) =>
-      resolveBoneName(k, [name])
-    );
-    if (mixamoName && bone.children.length > 0) {
-      const mapping = LIMB_BONE_MAPPINGS[mixamoName];
-      const d_tgt = computeDirection(
-        landmarks[mapping.parentLm],
-        landmarks[mapping.childLm]
-      );
-      if (d_tgt) {
-        const child = bone.children[0];
-        const childWorldPos = child.getWorldPosition(new THREE.Vector3());
-        const boneWorldPos = bone.getWorldPosition(new THREE.Vector3());
-        const d_cur = childWorldPos.sub(boneWorldPos).normalize();
-        if (d_cur.lengthSq() > 0) {
-          const q = computeRotation(d_cur, d_tgt);
-          const parentWorldQ = bone.parent
-            ? bone.parent.getWorldQuaternion(new THREE.Quaternion())
-            : new THREE.Quaternion();
-          const localQ = parentWorldQ.clone().invert().multiply(q).multiply(parentWorldQ);
-          bone.quaternion.premultiply(localQ);
-          bone.updateMatrixWorld(true);
-        }
+        child.geometry.setAttribute("color", new THREE.BufferAttribute(colors, 3));
       }
     }
   });
 };
 
-export const computeFrontVector = (landmarks: RawLandmark[]): THREE.Vector3 => {
-  const fallback = new THREE.Vector3(0, 0, 1);
-  const ls = landmarks[LM.LEFT_SHOULDER];
-  const rs = landmarks[LM.RIGHT_SHOULDER];
-  const lh = landmarks[LM.LEFT_HIP];
-  const rh = landmarks[LM.RIGHT_HIP];
-  if (!ls || !rs || !lh || !rh) return fallback;
+export const computeSkeletonBoundingBox = (skeleton: THREE.Skeleton): THREE.Box3 => {
+  const box = new THREE.Box3();
+  for (const bone of skeleton.bones) {
+    box.expandByPoint(bone.getWorldPosition(new THREE.Vector3()));
+  }
+  return box;
+};
 
-  const shoulderMid = toVec(ls).add(toVec(rs)).multiplyScalar(0.5);
-  const hipMid = toVec(lh).add(toVec(rh)).multiplyScalar(0.5);
+export const applyPoseToSkeleton = (
+  root: THREE.Object3D,
+  landmarks: RawLandmark[]
+): void => {
+  const boneMap = new Map<string, THREE.Bone>();
+  root.traverse((child) => {
+    if ((child as THREE.Bone).isBone) {
+      boneMap.set(child.name, child as THREE.Bone);
+    }
+  });
 
-  const up = shoulderMid.clone().sub(hipMid);
-  const right = toVec(rh).sub(toVec(lh));
-  if (up.lengthSq() === 0 || right.lengthSq() === 0) return fallback;
+  const bones = Array.from(boneMap.values());
+  const boneNames = bones.map((b) => b.name);
 
-  const front = up.cross(right);
-  if (front.lengthSq() === 0) return fallback;
-  return front.normalize();
+  const hipsName = resolveBoneName("mixamorig:Hips", boneNames);
+  if (hipsName) {
+    const hips = boneMap.get(hipsName);
+    const q = computeHipsRotation(landmarks);
+    if (hips && q) {
+      const parentQ = hips.parent
+        ? hips.parent.getWorldQuaternion(new THREE.Quaternion())
+        : new THREE.Quaternion();
+      hips.quaternion.copy(parentQ.clone().invert().multiply(q));
+    }
+  }
+
+  const spineName = resolveBoneName("mixamorig:Spine", boneNames);
+  if (spineName) {
+    const spine = boneMap.get(spineName);
+    const spineDir = computeSpineDirection(landmarks);
+    if (spine && spineDir) {
+      const parentWorldQ = spine.parent
+        ? spine.parent.getWorldQuaternion(new THREE.Quaternion())
+        : new THREE.Quaternion();
+      const currentWorldDir = new THREE.Vector3(0, 1, 0).applyQuaternion(parentWorldQ);
+      const q = computeRotation(currentWorldDir, spineDir);
+      spine.quaternion.premultiply(q);
+    }
+  }
+
+  const neckName = resolveBoneName("mixamorig:Neck", boneNames);
+  if (neckName) {
+    const neck = boneMap.get(neckName);
+    const neckDir = computeNeckDirection(landmarks);
+    if (neck && neckDir) {
+      const parentWorldQ = neck.parent
+        ? neck.parent.getWorldQuaternion(new THREE.Quaternion())
+        : new THREE.Quaternion();
+      const currentWorldDir = new THREE.Vector3(0, 1, 0).applyQuaternion(parentWorldQ);
+      const q = computeRotation(currentWorldDir, neckDir);
+      neck.quaternion.premultiply(q);
+    }
+  }
+
+  for (const [mixamoName, mapping] of Object.entries(LIMB_BONE_MAPPINGS)) {
+    const name = resolveBoneName(mixamoName, boneNames);
+    if (!name) continue;
+    const bone = boneMap.get(name);
+    if (!bone) continue;
+
+    const dir = computeDirection(landmarks[mapping.parentLm], landmarks[mapping.childLm]);
+    if (!dir) continue;
+
+    const parentWorldQ = bone.parent
+      ? bone.parent.getWorldQuaternion(new THREE.Quaternion())
+      : new THREE.Quaternion();
+    const currentWorldDir = new THREE.Vector3(0, 1, 0).applyQuaternion(parentWorldQ);
+    const q = computeRotation(currentWorldDir, dir);
+    bone.quaternion.premultiply(q);
+  }
 };
 
 export const getVertexMuscleId = (
-  boneIndex: number,
-  vertexWorldPos: THREE.Vector3,
-  frontVec: THREE.Vector3,
-  bones: THREE.Bone[]
+  vertexIndex: number,
+  geometry: THREE.BufferGeometry,
+  skeleton: THREE.Skeleton
 ): string | null => {
-  if (boneIndex < 0 || boneIndex >= bones.length) return null;
-  const bName = bones[boneIndex].name;
-  const is = (mixamo: string) => resolveBoneName(mixamo, [bName]) !== undefined;
+  const skinIndexAttr = geometry.getAttribute("skinIndex");
+  const skinWeightAttr = geometry.getAttribute("skinWeight");
+  if (!skinIndexAttr || !skinWeightAttr) return null;
 
-  if (is("mixamorig:Spine") || is("mixamorig:Spine1") || is("mixamorig:Spine2"))
-    return "core";
-  if (is("mixamorig:Hips")) return "glutes";
-
-  if (is("mixamorig:LeftShoulder")) return "deltoid:L";
-  if (is("mixamorig:RightShoulder")) return "deltoid:R";
-
-  if (is("mixamorig:LeftArm")) return "biceps:L";
-  if (is("mixamorig:RightArm")) return "biceps:R";
-
-  if (is("mixamorig:LeftForeArm") || is("mixamorig:LeftHand")) return "forearm:L";
-  if (is("mixamorig:RightForeArm") || is("mixamorig:RightHand")) return "forearm:R";
-
-  if (is("mixamorig:LeftLeg") || is("mixamorig:LeftFoot") || is("mixamorig:LeftToeBase"))
-    return "calf:L";
-  if (
-    is("mixamorig:RightLeg") ||
-    is("mixamorig:RightFoot") ||
-    is("mixamorig:RightToeBase")
-  )
-    return "calf:R";
-
-  if (is("mixamorig:LeftUpLeg")) {
-    const boneWorldPos = bones[boneIndex].getWorldPosition(new THREE.Vector3());
-    const dir = vertexWorldPos.clone().sub(boneWorldPos);
-    return dir.dot(frontVec) > 0 ? "quadriceps:L" : "hamstrings:L";
+  let maxWeight = 0;
+  let dominantBoneIndex = 0;
+  for (let i = 0; i < 4; i++) {
+    const weight = skinWeightAttr.getComponent(vertexIndex, i);
+    if (weight > maxWeight) {
+      maxWeight = weight;
+      dominantBoneIndex = skinIndexAttr.getComponent(vertexIndex, i);
+    }
   }
-  if (is("mixamorig:RightUpLeg")) {
-    const boneWorldPos = bones[boneIndex].getWorldPosition(new THREE.Vector3());
-    const dir = vertexWorldPos.clone().sub(boneWorldPos);
-    return dir.dot(frontVec) > 0 ? "quadriceps:R" : "hamstrings:R";
+
+  const bone = skeleton.bones[dominantBoneIndex];
+  if (!bone) return null;
+
+  const boneName = bone.name;
+  const isLeft = boneName.toLowerCase().includes("left");
+  const side = isLeft ? "L" : "R";
+
+  if (boneName.includes("Arm")) return `biceps:${side}`;
+  if (boneName.includes("ForeArm")) return `forearms:${side}`;
+
+  if (boneName.includes("UpLeg")) {
+    const positionAttr = geometry.getAttribute("position");
+    const localPos = new THREE.Vector3().fromBufferAttribute(positionAttr, vertexIndex);
+    const boneBindMatrix = skeleton.boneInverses[dominantBoneIndex].clone().invert();
+    const boneBindPos = new THREE.Vector3().setFromMatrixPosition(boneBindMatrix);
+    const dir = localPos.clone().sub(boneBindPos);
+
+    if (dir.z > 0) {
+      return `quadriceps:${side}`;
+    } else {
+      return `hamstrings:${side}`;
+    }
   }
+
+  if (boneName.includes("Leg")) return `calves:${side}`;
+  if (boneName.includes("Foot")) return `calves:${side}`;
+
+  if (boneName.includes("Hips") || boneName.includes("Spine")) return "core";
+  if (boneName.includes("Neck") || boneName.includes("Head")) return "shoulders";
+  if (boneName.includes("Shoulder")) return "shoulders";
 
   return null;
 };
@@ -195,118 +184,56 @@ export const getVertexMuscleId = (
 export const applyMuscleHeatColors = (
   mesh: THREE.SkinnedMesh,
   activations: ActivationMap,
-  landmarks: RawLandmark[],
-  selectedMuscle?: string | null
-) => {
+  selectedMuscle?: string
+): void => {
   const geometry = mesh.geometry;
-  const position = geometry.attributes.position;
-  const skinIndex = geometry.attributes.skinIndex;
-  const skinWeight = geometry.attributes.skinWeight;
+  const skeleton = mesh.skeleton;
+  if (!skeleton || !geometry.getAttribute("position")) return;
 
-  if (!geometry.attributes.color) {
-    geometry.setAttribute(
-      "color",
-      new THREE.BufferAttribute(new Float32Array(position.count * 3), 3)
-    );
+  if (!geometry.getAttribute("color")) {
+    const positionAttr = geometry.getAttribute("position");
+    const colors = new Float32Array(positionAttr.count * 3);
+    geometry.setAttribute("color", new THREE.BufferAttribute(colors, 3));
   }
-  const colors = geometry.attributes.color;
-  const frontVec = computeFrontVector(landmarks);
-  const bones = mesh.skeleton.bones;
+  const colorAttr = geometry.getAttribute("color") as THREE.BufferAttribute;
 
-  const vertexWorldPos = new THREE.Vector3();
+  const neutralColor = new THREE.Color(NEUTRAL);
 
-  for (let i = 0; i < position.count; i++) {
-    let maxWeight = -1;
-    let mainBoneIndex = 0;
-    for (let j = 0; j < 4; j++) {
-      const w = skinWeight.getComponent(i, j);
-      if (w > maxWeight) {
-        maxWeight = w;
-        mainBoneIndex = skinIndex.getComponent(i, j);
+  for (let i = 0; i < colorAttr.count; i++) {
+    const muscleId = getVertexMuscleId(i, geometry, skeleton);
+
+    let color = neutralColor;
+    if (muscleId && activations[muscleId]) {
+      const hc = heatColor(activations[muscleId]);
+      const activeColor = hc.color;
+      if (!selectedMuscle || muscleId.startsWith(selectedMuscle)) {
+        color = activeColor;
       }
     }
 
-    const localPos = new THREE.Vector3().fromBufferAttribute(position, i);
-    vertexWorldPos.copy(localPos).applyMatrix4(mesh.matrixWorld);
+    colorAttr.setXYZ(i, color.r, color.g, color.b);
+  }
+  colorAttr.needsUpdate = true;
+};
 
-    const mId = getVertexMuscleId(mainBoneIndex, vertexWorldPos, frontVec, bones);
+export const musclesAtFace = (mesh: THREE.SkinnedMesh, faceIndex: number): string[] => {
+  const geometry = mesh.geometry;
+  const indexAttr = geometry.getIndex();
+  if (!indexAttr || !mesh.skeleton) return [];
 
-    let baseColor = new THREE.Color(NEUTRAL);
+  const a = indexAttr.getX(faceIndex * 3);
+  const b = indexAttr.getX(faceIndex * 3 + 1);
+  const c = indexAttr.getX(faceIndex * 3 + 2);
 
-    if (mId) {
-      const act = activations[mId] || 0;
-      const hc = heatColor(act);
-      baseColor = hc.color;
-
-      const baseMuscleId = mId.split(":")[0];
-      if (selectedMuscle && baseMuscleId !== selectedMuscle) {
-        baseColor = new THREE.Color(NEUTRAL);
-      }
-    } else {
-      if (selectedMuscle) {
-        baseColor = new THREE.Color(NEUTRAL);
-      }
-    }
-
-    colors.setXYZ(i, baseColor.r, baseColor.g, baseColor.b);
+  const muscles = new Set<string>();
+  for (const idx of [a, b, c]) {
+    const m = getVertexMuscleId(idx, geometry, mesh.skeleton);
+    if (m) muscles.add(m.split(":")[0]);
   }
 
-  colors.needsUpdate = true;
+  return Array.from(muscles);
 };
 
-export const musclesAtFace = (
-  mesh: THREE.SkinnedMesh,
-  faceIndex: number,
-  landmarks: RawLandmark[]
-): string[] => {
-  const geometry = mesh.geometry;
-  const index = geometry.index;
-  if (!index) return [];
-
-  const a = index.getX(faceIndex * 3);
-  const b = index.getX(faceIndex * 3 + 1);
-  const c = index.getX(faceIndex * 3 + 2);
-
-  const frontVec = computeFrontVector(landmarks);
-  const bones = mesh.skeleton.bones;
-
-  const getMid = (vi: number) => {
-    let maxWeight = -1;
-    let mainBoneIndex = 0;
-    for (let j = 0; j < 4; j++) {
-      const w = geometry.attributes.skinWeight.getComponent(vi, j);
-      if (w > maxWeight) {
-        maxWeight = w;
-        mainBoneIndex = geometry.attributes.skinIndex.getComponent(vi, j);
-      }
-    }
-    const localPos = new THREE.Vector3().fromBufferAttribute(
-      geometry.attributes.position,
-      vi
-    );
-    const vertexWorldPos = localPos.clone().applyMatrix4(mesh.matrixWorld);
-    return getVertexMuscleId(mainBoneIndex, vertexWorldPos, frontVec, bones);
-  };
-
-  const m1 = getMid(a);
-  const m2 = getMid(b);
-  const m3 = getMid(c);
-
-  const set = new Set<string>();
-  if (m1) set.add(m1.split(":")[0]);
-  if (m2) set.add(m2.split(":")[0]);
-  if (m3) set.add(m3.split(":")[0]);
-
-  return Array.from(set);
-};
-
-export const computeSkeletonBoundingBox = (root: THREE.Object3D): THREE.Box3 => {
-  const box = new THREE.Box3();
-  root.traverse((obj) => {
-    if ((obj as THREE.Bone).isBone) {
-      box.expandByPoint(obj.getWorldPosition(new THREE.Vector3()));
-    }
-  });
-  box.expandByScalar(0.15); // Add thickness
-  return box;
-};
+// Re-export computeHipsRotation for tests and internal usage if needed
+import { computeHipsRotation } from "./retarget";
+export { computeHipsRotation };
