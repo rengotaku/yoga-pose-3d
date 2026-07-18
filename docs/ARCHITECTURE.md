@@ -15,8 +15,8 @@
    - 推論結果（2D `landmarks`, 3D `worldLandmarks`）は再び `usePoseStore` に格納されます。
 4. **結果の描画 (2D / 3D)**
    - **2D**: `PoseCanvas` が `landmarks` を購読し、元画像の上にオーバーレイとして骨格を描画します。
-   - **3D**: `PoseViewer3D` が `worldLandmarks` を購読し、Three.js を用いて 3D 空間内に肉付き筋肉ボディ（胴体メッシュ + 肢体カプセル + 関節球）を構築し描画します。各部位は使用筋アクティベーション（`muscles.ts` が関節角度から推定）でヒートマップ着色されます。
-   - **使用筋の凡例**: `PoseViewer3D` は `aggregateByMuscle` で筋群別アクティベーションを算出し、3Dビューの下に `MuscleLegend` として一覧表示します（EMG 実測ではなく幾何推定）。
+   - **3D**: `PoseViewer3D` が `worldLandmarks` を購読し、Three.js を用いて 3D 空間内に肉付き筋肉ボディ（胴体メッシュ + 肢体カプセル + 関節球）を構築し描画します。各部位は使用筋アクティベーション（`muscles.ts` が関節角度から推定）でヒートマップ着色されます。大腿は前後2カプセル（前=四頭筋 / 後=ハムストリングス）に分割して個別着色します。ポーズ変化時にはバウンディングボックスからカメラ距離を自動調整（`cameraFit.ts`）し、見切れを防ぎます。
+   - **使用筋の凡例と連動**: `PoseViewer3D` は `aggregateByMuscle` で筋群別アクティベーションを算出し、3Dビューの下に `MuscleLegend` として一覧表示します（EMG 実測ではなく幾何推定）。凡例の筋をクリックすると 3D 上の該当部位がハイライト（他部位は減光）、3D 部位のホバーで筋名ツールチップを表示します（メッシュ→筋の対応は `mesh.userData.muscles`）。
 
 ## ディレクトリ構成と役割 (Directory Structure)
 
@@ -24,10 +24,11 @@
   - `ImageUploader.tsx`: 画像のドラッグ＆ドロップ、ファイル選択、サイズ上限・形式バリデーションを担当。
   - `PoseCanvas.tsx`: 画像の表示と、MediaPipe による推論トリガー、2D 骨格のオーバーレイ描画を担当。
 - `src/components/PoseViewer3D/`
-  - `PoseViewer3D.tsx`: Three.js による 3D 空間の構築、カメラコントロール (`OrbitControls`)、ライティング設定を担当。`worldLandmarks` から肉付きボディを生成・更新し、下部に使用筋凡例を表示します。
-  - `mannequin.ts`: `worldLandmarks` から肉付き筋肉ボディ（胴体シリンダー + 肢体カプセル + 関節球）を生成する `generateMannequin`。各部位を使用筋アクティベーションでヒート着色します。
-  - `muscles.ts`: 関節角度・分節ベクトルから 8 筋群のアクティベーション（0..1）を推定する純粋関数群（`computeActivations` / `aggregateByMuscle`）とヒート色変換（`heatColor`）。ヒューリスティック（EMG 実測ではない）。
-  - `MuscleLegend.tsx`: 使用筋を色付きバーで一覧表示する凡例パネル（3Dビューの外・下に配置）。
+  - `PoseViewer3D.tsx`: Three.js による 3D 空間の構築、カメラコントロール (`OrbitControls`)、ライティング設定を担当。`worldLandmarks` から肉付きボディを生成・更新し、ポーズ変化時にカメラを自動フィット。凡例クリックによる部位ハイライト（マテリアルの emissive/opacity 更新）と Raycaster によるホバーツールチップを制御し、下部に使用筋凡例を表示します。
+  - `mannequin.ts`: `worldLandmarks` から肉付き筋肉ボディ（胴体シリンダー + 肢体カプセル + 関節球）を生成する `generateMannequin`。各部位を使用筋アクティベーションでヒート着色し、`mesh.userData.muscles` に筋 ID を付与します。大腿は `computeFrontVector`（骨盤左右軸×体幹軸の外積で前方推定）で前後2カプセルに分割（`addThighLimb`）。
+  - `muscles.ts`: 関節角度・分節ベクトルから 8 筋群のアクティベーション（0..1）を推定する純粋関数群（`computeActivations` / `aggregateByMuscle`）とヒート色変換（`heatColor`）。`detectSupportLegs` で荷重度を推定し、支持脚側の下肢筋を抗重力で重み付け。重み係数は `LOAD_WEIGHT` 定数に集約。ヒューリスティック（EMG 実測ではない）。
+  - `cameraFit.ts`: バウンディングボックスと fov からカメラ位置・注視点を算出する純粋関数 `calculateCameraFit`。
+  - `MuscleLegend.tsx`: 使用筋を色付きバーで一覧表示する凡例パネル（3Dビューの外・下に配置）。行クリックで筋を選択トグルし親へ通知します。
 - `src/hooks/`
   - `usePoseEstimation.ts`: MediaPipe `PoseLandmarker` の初期化と推論処理をカプセル化。非同期ロードや推論中の競合管理、コンポーネントアンマウント時のリソース解放 (`close()`) を担当。
 - `src/store/`
@@ -42,7 +43,7 @@
 - **使用筋の推定ロジック・ヒート色を変えたい場合**
   - `src/components/PoseViewer3D/muscles.ts` の `computeActivations`（関節角度→筋群アクティベーション）や `heatColor`（色域）を変更します。筋群の追加は `MuscleId` / `MUSCLE_LABELS` / `MUSCLE_ORDER` に定義を足します。
 - **カメラの初期位置やズーム、回転の設定を変えたい場合**
-  - 同様に `PoseViewer3D.tsx` 内の `PerspectiveCamera` や `OrbitControls` の設定箇所を変更します。
+  - `PoseViewer3D.tsx` 内の `PerspectiveCamera` や `OrbitControls` の設定箇所を変更します。ポーズ変化時の自動フィットの寄り具合（マージン等）は `cameraFit.ts` の `calculateCameraFit` を変更します。
 - **姿勢推定モデルを変更・更新したい場合**
   - `src/hooks/usePoseEstimation.ts` の `MODEL_URL`（Google Cloud StorageのURL）や `PoseLandmarker.createFromOptions` に渡すオプションを変更します。
 - **画像アップロードの制限（ファイルサイズ・形式）を変えたい場合**
