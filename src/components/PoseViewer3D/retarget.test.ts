@@ -10,6 +10,7 @@ import {
   computeNeckDirection,
   computeHipsRotation,
   LIMB_BONE_MAPPINGS,
+  distributeSpineRotation,
 } from "./retarget";
 
 const buildMockLandmarks = (): RawLandmark[] => {
@@ -142,5 +143,50 @@ describe("LIMB_BONE_MAPPINGS", () => {
   it("contains expected entries mapping to MediaPipe landmarks", () => {
     expect(LIMB_BONE_MAPPINGS["mixamorig:LeftUpLeg"].parentLm).toBe(LM.LEFT_HIP);
     expect(LIMB_BONE_MAPPINGS["mixamorig:RightArm"].childLm).toBe(LM.RIGHT_ELBOW);
+  });
+});
+
+describe("distributeSpineRotation", () => {
+  it("distributes rotation such that the composite rotation mathematically matches the target rotation", () => {
+    // 任意の軸と角度で目標回転を作成 (例: X軸とY軸の中間を軸に90度回転)
+    const axis = new THREE.Vector3(1, 1, 0).normalize();
+    const angle = Math.PI / 2;
+    const targetRotation = new THREE.Quaternion().setFromAxisAngle(axis, angle);
+
+    // 重み（合計1）
+    const weights: [number, number, number] = [0.2, 0.3, 0.5];
+    const [q0, q1, q2] = distributeSpineRotation(targetRotation, weights);
+
+    // テスト1: 個々の分配が正しいことを数学的に導出
+    // slerpは回転角を線形補間するため、同じ軸に対して angle * weight の回転になる
+    const expectedQ0 = new THREE.Quaternion().setFromAxisAngle(axis, angle * weights[0]);
+    const expectedQ1 = new THREE.Quaternion().setFromAxisAngle(axis, angle * weights[1]);
+    const expectedQ2 = new THREE.Quaternion().setFromAxisAngle(axis, angle * weights[2]);
+
+    expect(q0.angleTo(expectedQ0)).toBeCloseTo(0);
+    expect(q1.angleTo(expectedQ1)).toBeCloseTo(0);
+    expect(q2.angleTo(expectedQ2)).toBeCloseTo(0);
+
+    // テスト2: 分配後の3ボーンの合成回転が分配前の目標回転と一致すること
+    // 同じ軸の回転は可換であり、合成は単純な積で求まる
+    const compositeRotation = new THREE.Quaternion().copy(q0).multiply(q1).multiply(q2);
+    expect(compositeRotation.angleTo(targetRotation)).toBeCloseTo(0);
+  });
+
+  it("uses default weights [1/3, 1/3, 1/3] if not provided", () => {
+    const axis = new THREE.Vector3(0, 1, 0);
+    const angle = Math.PI / 3;
+    const targetRotation = new THREE.Quaternion().setFromAxisAngle(axis, angle);
+
+    const [q0, q1, q2] = distributeSpineRotation(targetRotation);
+
+    const expectedQ = new THREE.Quaternion().setFromAxisAngle(axis, angle / 3);
+
+    expect(q0.angleTo(expectedQ)).toBeCloseTo(0);
+    expect(q1.angleTo(expectedQ)).toBeCloseTo(0);
+    expect(q2.angleTo(expectedQ)).toBeCloseTo(0);
+
+    const compositeRotation = new THREE.Quaternion().copy(q0).multiply(q1).multiply(q2);
+    expect(compositeRotation.angleTo(targetRotation)).toBeCloseTo(0);
   });
 });
