@@ -73,6 +73,10 @@ test-watch:
 test-cov:
 	npm run test:coverage
 
+## verify-poses: 代表ポーズ画像の回帰スクショを e2e/output/ に生成（要: make run 起動済み）
+verify-poses:
+	node e2e/pose-verify.mjs
+
 ## check: Run lint + test
 check: lint test
 
