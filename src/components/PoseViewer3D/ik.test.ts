@@ -19,6 +19,8 @@ describe("detectGroundContacts", () => {
       rightFoot: true,
       leftHand: true,
       rightHand: true,
+      leftKnee: false,
+      rightKnee: false,
     });
   });
 
@@ -33,6 +35,8 @@ describe("detectGroundContacts", () => {
       rightFoot: true,
       leftHand: false,
       rightHand: false,
+      leftKnee: false,
+      rightKnee: false,
     });
   });
 
@@ -47,7 +51,46 @@ describe("detectGroundContacts", () => {
       rightFoot: false,
       leftHand: true,
       rightHand: true,
+      leftKnee: false,
+      rightKnee: false,
     });
+  });
+
+  it("marks knees grounded for a kneeling pose (thigh near vertical)", () => {
+    // 膝立ちサイドベンド風: 膝・足の甲が床、股関節は膝の真上、片手は頭上
+    const lm = emptyLandmarks();
+    lm[LM.LEFT_HIP] = { x: 0, y: 0.4, z: 0 };
+    lm[LM.RIGHT_HIP] = { x: 0.1, y: 0.4, z: 0 };
+    lm[LM.LEFT_KNEE] = { x: 0, y: 0.88, z: 0 };
+    lm[LM.RIGHT_KNEE] = { x: 0.1, y: 0.9, z: 0 };
+    lm[LM.LEFT_FOOT_INDEX] = { x: 0, y: 0.87, z: -0.3 };
+    lm[LM.RIGHT_FOOT_INDEX] = { x: 0.1, y: 0.89, z: -0.3 };
+    lm[LM.LEFT_WRIST] = { x: 0, y: -0.2, z: 0 };
+    lm[LM.RIGHT_WRIST] = { x: 0, y: -0.3, z: 0 };
+    expect(detectGroundContacts(lm)).toEqual({
+      leftFoot: true,
+      rightFoot: true,
+      leftHand: false,
+      rightHand: false,
+      leftKnee: true,
+      rightKnee: true,
+    });
+  });
+
+  it("does not mark knees grounded for a seated pose (thigh horizontal)", () => {
+    // あぐら: 膝も床付近だが股関節も床付近（腿が水平）→ 膝接地扱いにしない
+    const lm = emptyLandmarks();
+    lm[LM.LEFT_HIP] = { x: 0, y: 0.85, z: 0 };
+    lm[LM.RIGHT_HIP] = { x: 0.1, y: 0.85, z: 0 };
+    lm[LM.LEFT_KNEE] = { x: 0.35, y: 0.9, z: 0 };
+    lm[LM.RIGHT_KNEE] = { x: -0.25, y: 0.9, z: 0 };
+    lm[LM.LEFT_FOOT_INDEX] = { x: -0.1, y: 0.92, z: 0.1 };
+    lm[LM.RIGHT_FOOT_INDEX] = { x: 0.15, y: 0.91, z: 0.1 };
+    lm[LM.LEFT_WRIST] = { x: 0, y: 0.2, z: 0 };
+    lm[LM.RIGHT_WRIST] = { x: 0, y: 0.2, z: 0 };
+    const contacts = detectGroundContacts(lm);
+    expect(contacts.leftKnee).toBe(false);
+    expect(contacts.rightKnee).toBe(false);
   });
 });
 
@@ -257,5 +300,66 @@ describe("applyContactIK", () => {
 
     expect(scene.position.y).toBeLessThan(0);
     expect(after.y).toBeCloseTo(floorY + CONTACT_IK.footClearanceM, 2);
+  });
+
+  /** 膝立ち風の脚リグ（腿がやや前傾、足首は膝の後下方） */
+  const buildKneelingRig = () => {
+    const scene = new THREE.Group();
+    const pelvis = new THREE.Bone();
+    pelvis.name = "pelvis";
+    const thigh = new THREE.Bone();
+    thigh.name = "thigh_l";
+    const calf = new THREE.Bone();
+    calf.name = "calf_l";
+    const foot = new THREE.Bone();
+    foot.name = "foot_l";
+    scene.add(pelvis);
+    pelvis.add(thigh);
+    thigh.add(calf);
+    calf.add(foot);
+    thigh.position.set(0.1, -0.05, 0);
+    calf.position.set(0.25, -0.35, 0.05); // 膝: world (0.35, -0.4, 0.05)
+    foot.position.set(0, -0.08, -0.38); // 足首: 膝の後下方
+    scene.updateMatrixWorld(true);
+    return { scene, thigh, calf, foot };
+  };
+
+  /** 左脚のみ膝立ち接地の landmarks（腿鉛直、足の甲も床、他は高所） */
+  const kneelingLandmarks = (): RawLandmark[] => {
+    const lm = emptyLandmarks();
+    lm[LM.LEFT_HIP] = { x: 0, y: 0.4, z: 0 };
+    lm[LM.LEFT_KNEE] = { x: 0, y: 0.9, z: 0 };
+    lm[LM.LEFT_FOOT_INDEX] = { x: 0, y: 0.88, z: -0.2 };
+    lm[LM.RIGHT_FOOT_INDEX] = { x: 0, y: -1, z: 0 };
+    lm[LM.LEFT_WRIST] = { x: 0, y: -1, z: 0 };
+    lm[LM.RIGHT_WRIST] = { x: 0, y: -1, z: 0 };
+    return lm;
+  };
+
+  it("drops a kneeling knee to floor + clearance and lays the shin flat", () => {
+    const { scene, calf, foot } = buildKneelingRig();
+    // 膝(-0.4) より 0.05 下に膝ターゲットが来る床（腿リーチ内）
+    const floorY = -0.5;
+    applyContactIK(scene, kneelingLandmarks(), floorY);
+
+    const knee = calf.getWorldPosition(new THREE.Vector3());
+    const ankle = foot.getWorldPosition(new THREE.Vector3());
+    // 膝は床 + クリアランスへ
+    expect(knee.y).toBeCloseTo(floorY + CONTACT_IK.kneeClearanceM, 3);
+    // すね（膝→足首）は床平行（足首 IK が走っていればここがずれる）
+    expect(ankle.y).toBeCloseTo(knee.y, 3);
+  });
+
+  it("lowers the whole body when the kneeling knee target is out of thigh reach", () => {
+    const { scene, calf, foot } = buildKneelingRig();
+    // 腿リーチ ~0.43 に対し股関節から 0.6 下の膝ターゲット → 胴体降下が必要
+    const floorY = -0.7;
+    applyContactIK(scene, kneelingLandmarks(), floorY);
+
+    const knee = calf.getWorldPosition(new THREE.Vector3());
+    const ankle = foot.getWorldPosition(new THREE.Vector3());
+    expect(scene.position.y).toBeLessThan(0);
+    expect(knee.y).toBeCloseTo(floorY + CONTACT_IK.kneeClearanceM, 2);
+    expect(ankle.y).toBeCloseTo(knee.y, 2);
   });
 });
