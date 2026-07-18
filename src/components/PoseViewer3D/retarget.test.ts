@@ -11,6 +11,9 @@ import {
   computeHipsRotation,
   LIMB_BONE_MAPPINGS,
   distributeSpineRotation,
+  computeBackbendAmount,
+  computeBackbendArchRotations,
+  BACKBEND_ARCH,
 } from "./retarget";
 
 const buildMockLandmarks = (): RawLandmark[] => {
@@ -153,6 +156,74 @@ describe("LIMB_BONE_MAPPINGS", () => {
   it("contains expected entries mapping to MediaPipe landmarks", () => {
     expect(LIMB_BONE_MAPPINGS["mixamorig:LeftUpLeg"].parentLm).toBe(LM.LEFT_HIP);
     expect(LIMB_BONE_MAPPINGS["mixamorig:RightArm"].childLm).toBe(LM.RIGHT_ELBOW);
+  });
+});
+
+/**
+ * 後屈（wheel 様）のモック: 骨盤が頂点で belly-forward 軸が world 上向き。
+ * MediaPipe 座標（y 下向き正）。hips: z 軸沿いに左右、shoulders: 骨盤より
+ * 下（y 正）かつ +x 側 → three 座標で belly 軸 ≈ (0.83, 0.56, 0)。
+ */
+const buildBackbendLandmarks = (): RawLandmark[] => {
+  const lm: RawLandmark[] = Array.from({ length: 33 }, () => ({ x: 0, y: 0, z: 0 }));
+  lm[LM.LEFT_HIP] = { x: 0, y: 0, z: -0.06 };
+  lm[LM.RIGHT_HIP] = { x: 0, y: 0, z: 0.06 };
+  lm[LM.LEFT_SHOULDER] = { x: 0.25, y: 0.37, z: -0.05 };
+  lm[LM.RIGHT_SHOULDER] = { x: 0.25, y: 0.37, z: 0.05 };
+  return lm;
+};
+
+describe("computeBackbendAmount", () => {
+  it("returns 0 for an upright pose (belly axis is horizontal)", () => {
+    expect(computeBackbendAmount(buildMockLandmarks())).toBe(0);
+  });
+
+  it("returns positive amount for a backbend pose (belly axis points up)", () => {
+    const amount = computeBackbendAmount(buildBackbendLandmarks());
+    expect(amount).toBeGreaterThan(0);
+    expect(amount).toBeLessThanOrEqual(1);
+  });
+
+  it("returns 0 when belly axis points down (downdog-like fold)", () => {
+    // 前屈: shoulders が骨盤より下かつ -x 側 → belly 軸は下向きになる
+    const lm = buildBackbendLandmarks();
+    lm[LM.LEFT_SHOULDER] = { x: -0.25, y: 0.37, z: -0.05 };
+    lm[LM.RIGHT_SHOULDER] = { x: -0.25, y: 0.37, z: 0.05 };
+    expect(computeBackbendAmount(lm)).toBe(0);
+  });
+});
+
+describe("computeBackbendArchRotations", () => {
+  it("returns null for an upright pose", () => {
+    expect(computeBackbendArchRotations(buildMockLandmarks())).toBeNull();
+  });
+
+  it("returns bow deltas [+A, -A, -A] preserving the end position", () => {
+    const landmarks = buildBackbendLandmarks();
+    const qs = computeBackbendArchRotations(landmarks);
+    expect(qs).not.toBeNull();
+    const [q0, q1, q2] = qs!;
+
+    // 角度 A = amount * maxArchRad
+    const amount = computeBackbendAmount(landmarks);
+    const expectedA = amount * BACKBEND_ARCH.maxArchRad;
+    expect(q0.angleTo(new THREE.Quaternion())).toBeCloseTo(expectedA, 5);
+
+    // q1 は q0 の逆回転、q2 は q1 と同一（弓: 傾き [+A, 0, -A]）
+    const composed = q0.clone().multiply(q1);
+    expect(composed.angleTo(new THREE.Quaternion())).toBeCloseTo(0, 5);
+    expect(q1.angleTo(q2)).toBeCloseTo(0, 5);
+  });
+
+  it("bends the base segment toward the belly side", () => {
+    const landmarks = buildBackbendLandmarks();
+    const [q0] = computeBackbendArchRotations(landmarks)!;
+    const hipsQ = computeHipsRotation(landmarks)!;
+    const belly = new THREE.Vector3(0, 0, 1).applyQuaternion(hipsQ);
+    const spineUp = new THREE.Vector3(0, 1, 0).applyQuaternion(hipsQ);
+    const bent = spineUp.clone().applyQuaternion(q0);
+    // 曲げ後の基部セグメントは belly 軸との内積が増える（腹側へ膨らむ）
+    expect(bent.dot(belly)).toBeGreaterThan(spineUp.dot(belly) + 0.1);
   });
 });
 
