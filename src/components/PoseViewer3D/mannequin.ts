@@ -75,6 +75,91 @@ const mid = (
   b: RawLandmark | undefined
 ): THREE.Vector3 | null => (a && b ? toVec(a).add(toVec(b)).multiplyScalar(0.5) : null);
 
+/**
+ * 体の前方ベクトル（描画座標系）を骨盤・体幹から推定する。
+ *
+ * 左右 hip を結ぶベクトル（右-左）と、股→肩の体幹軸（up）の外積
+ * up × right を取ると、前方向を向く単位ベクトルが得られる
+ * （静止立位の landmark で検証済み: up=(0,+y,0), right=(-x,0,0) のとき
+ * 外積は (0,0,+z) となり、"体の前方は概ね -z"（MediaPipe world 座標、
+ * toVec 変換前）という前提と符号が一致する）。
+ *
+ * world -z 固定ではなく骨盤・体幹から都度推定することで、しゃがみ・前傾・
+ * 体の向きが変わるポーズでも破綻しにくくしている。
+ */
+const computeFrontVector = (landmarks: RawLandmark[]): THREE.Vector3 => {
+  const fallback = new THREE.Vector3(0, 0, 1);
+  const ls = landmarks[LM.LEFT_SHOULDER];
+  const rs = landmarks[LM.RIGHT_SHOULDER];
+  const lh = landmarks[LM.LEFT_HIP];
+  const rh = landmarks[LM.RIGHT_HIP];
+  if (!ls || !rs || !lh || !rh) return fallback;
+
+  const shoulderMid = mid(ls, rs);
+  const hipMid = mid(lh, rh);
+  if (!shoulderMid || !hipMid) return fallback;
+
+  const up = shoulderMid.clone().sub(hipMid);
+  const right = toVec(rh).sub(toVec(lh));
+  if (up.lengthSq() === 0 || right.lengthSq() === 0) return fallback;
+
+  const front = up.cross(right);
+  if (front.lengthSq() === 0) return fallback;
+  return front.normalize();
+};
+
+/**
+ * 大腿を前後2つのカプセル（前=四頭筋 / 後=ハムストリングス）に分割して配置する。
+ * frontVec を大腿軸（hip→knee）に直交する成分へ投影し、その方向へ
+ * ±offset だけずらすことで前後の分離を表現する。
+ */
+const addThighLimb = (
+  group: THREE.Group,
+  hip: RawLandmark | undefined,
+  knee: RawLandmark | undefined,
+  frontVec: THREE.Vector3,
+  quadActivation: number,
+  hamstringActivation: number
+): void => {
+  if (!hip || !knee) return;
+  const av = toVec(hip);
+  const bv = toVec(knee);
+  const axisVec = bv.clone().sub(av);
+  const len = axisVec.length();
+  if (len <= 0) return;
+  const axis = axisVec.clone().normalize();
+
+  // frontVec を大腿軸と直交する成分に投影（軸方向成分を除去）
+  const ortho = frontVec.clone().sub(axis.clone().multiplyScalar(frontVec.dot(axis)));
+  const offsetDir =
+    ortho.lengthSq() > 1e-8 ? ortho.normalize() : new THREE.Vector3(0, 0, 1);
+
+  const radius = 0.06;
+  const offset = 0.025;
+  const cylLen = Math.max(0.001, len - radius * 2);
+  const center = av.clone().lerp(bv, 0.5);
+  const quat = new THREE.Quaternion().setFromUnitVectors(
+    new THREE.Vector3(0, 1, 0),
+    axis
+  );
+
+  const addHalf = (
+    dirSign: number,
+    material: THREE.Material,
+    muscles: string[]
+  ): void => {
+    const geometry = new THREE.CapsuleGeometry(radius, cylLen, 6, 12);
+    const mesh = new THREE.Mesh(geometry, material);
+    mesh.position.copy(center).addScaledVector(offsetDir, dirSign * offset);
+    mesh.quaternion.copy(quat);
+    mesh.userData.muscles = muscles;
+    group.add(mesh);
+  };
+
+  addHalf(1, heatMaterial(quadActivation), ["quadriceps"]); // 前=四頭筋
+  addHalf(-1, heatMaterial(hamstringActivation), ["hamstrings"]); // 後=ハムストリングス
+};
+
 /** 胴体メッシュ（肩→腰の体積）を配置 */
 const addTorso = (
   group: THREE.Group,
@@ -166,25 +251,26 @@ export const generateMannequin = (
     ["forearm"]
   );
 
-  // --- 下肢（大腿は四頭筋/ハムの max でヒート） ---
-  addLimb(
+  // --- 下肢（大腿は前=四頭筋 / 後=ハムストリングスの2カプセルに分割） ---
+  const frontVec = computeFrontVector(worldLandmarks);
+  addThighLimb(
     group,
     g(LM.LEFT_HIP),
     g(LM.LEFT_KNEE),
-    0.08,
-    heatMaterial(Math.max(a("quadriceps:L"), a("hamstrings:L"))),
-    ["quadriceps", "hamstrings"]
+    frontVec,
+    a("quadriceps:L"),
+    a("hamstrings:L")
   );
   addLimb(group, g(LM.LEFT_KNEE), g(LM.LEFT_ANKLE), 0.055, heatMaterial(a("calf:L")), [
     "calf",
   ]);
-  addLimb(
+  addThighLimb(
     group,
     g(LM.RIGHT_HIP),
     g(LM.RIGHT_KNEE),
-    0.08,
-    heatMaterial(Math.max(a("quadriceps:R"), a("hamstrings:R"))),
-    ["quadriceps", "hamstrings"]
+    frontVec,
+    a("quadriceps:R"),
+    a("hamstrings:R")
   );
   addLimb(group, g(LM.RIGHT_KNEE), g(LM.RIGHT_ANKLE), 0.055, heatMaterial(a("calf:R")), [
     "calf",
