@@ -29,11 +29,35 @@ export const loadMannequin = (url: string): Promise<THREE.Group> => {
 export const setupMannequinMaterials = (root: THREE.Object3D): void => {
   root.traverse((child) => {
     if (child instanceof THREE.SkinnedMesh) {
-      child.material = new THREE.MeshStandardMaterial({
+      const material = new THREE.MeshStandardMaterial({
         vertexColors: true,
         roughness: 0.55,
         metalness: 0.05,
       });
+      material.onBeforeCompile = (shader) => {
+        shader.vertexShader = shader.vertexShader.replace(
+          "#include <common>",
+          `#include <common>
+           attribute float emissionIntensity;
+           varying float vEmissionIntensity;`
+        );
+        shader.vertexShader = shader.vertexShader.replace(
+          "#include <color_vertex>",
+          `#include <color_vertex>
+           vEmissionIntensity = emissionIntensity;`
+        );
+        shader.fragmentShader = shader.fragmentShader.replace(
+          "#include <common>",
+          `#include <common>
+           varying float vEmissionIntensity;`
+        );
+        shader.fragmentShader = shader.fragmentShader.replace(
+          "#include <emissivemap_fragment>",
+          `#include <emissivemap_fragment>
+           totalEmissiveRadiance += diffuseColor.rgb * vEmissionIntensity;`
+        );
+      };
+      child.material = material;
       if (!child.geometry.hasAttribute("color")) {
         const positionAttribute = child.geometry.getAttribute("position");
         const colors = new Float32Array(positionAttribute.count * 3);
@@ -257,12 +281,19 @@ export const applyMuscleHeatColors = (
   const skeleton = mesh.skeleton;
   if (!skeleton || !geometry.getAttribute("position")) return;
 
+  const positionAttr = geometry.getAttribute("position");
   if (!geometry.getAttribute("color")) {
-    const positionAttr = geometry.getAttribute("position");
     const colors = new Float32Array(positionAttr.count * 3);
     geometry.setAttribute("color", new THREE.BufferAttribute(colors, 3));
   }
+  if (!geometry.getAttribute("emissionIntensity")) {
+    const intensities = new Float32Array(positionAttr.count);
+    geometry.setAttribute("emissionIntensity", new THREE.BufferAttribute(intensities, 1));
+  }
   const colorAttr = geometry.getAttribute("color") as THREE.BufferAttribute;
+  const emissionAttr = geometry.getAttribute(
+    "emissionIntensity"
+  ) as THREE.BufferAttribute;
 
   const neutralColor = new THREE.Color(NEUTRAL);
 
@@ -270,17 +301,23 @@ export const applyMuscleHeatColors = (
     const muscleId = getVertexMuscleId(i, geometry, skeleton);
 
     let color = neutralColor;
+    let emission = 0.0;
     if (muscleId && activations[muscleId]) {
       const hc = heatColor(activations[muscleId]);
       const activeColor = hc.color;
       if (!selectedMuscle || muscleId.startsWith(selectedMuscle)) {
         color = activeColor;
+        if (selectedMuscle && muscleId.startsWith(selectedMuscle)) {
+          emission = 1.0;
+        }
       }
     }
 
     colorAttr.setXYZ(i, color.r, color.g, color.b);
+    emissionAttr.setX(i, emission);
   }
   colorAttr.needsUpdate = true;
+  emissionAttr.needsUpdate = true;
 };
 
 export const musclesAtFace = (mesh: THREE.SkinnedMesh, faceIndex: number): string[] => {
