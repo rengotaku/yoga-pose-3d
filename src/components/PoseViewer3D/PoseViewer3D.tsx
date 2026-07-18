@@ -178,7 +178,12 @@ export const PoseViewer3D: React.FC = () => {
       const box = computeSkeletonBoundingBox(skeleton);
       // fallback in case box is empty
       if (!box.isEmpty()) {
-        const { position, target } = calculateCameraFit(box, cameraRef.current.fov);
+        const { position, target } = calculateCameraFit(
+          box,
+          cameraRef.current.fov,
+          undefined,
+          cameraRef.current.aspect
+        );
         cameraRef.current.position.copy(position);
         controlsRef.current.target.copy(target);
         controlsRef.current.update();

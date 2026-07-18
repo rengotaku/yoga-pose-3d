@@ -176,11 +176,23 @@ describe("calculateCameraFit", () => {
     expect(result.target.y).toBeCloseTo(0);
     expect(result.target.z).toBeCloseTo(0);
 
+    // bbox 縦横フィット: 縦横 2、margin 1.3、aspect 1 → distV = distH = 1.3 / tan(22.5°)
     const fovRad = (45 * Math.PI) / 180;
-    const expectedDistance = (Math.sqrt(3) * 1.3) / Math.sin(fovRad / 2);
+    const tanHalfV = Math.tan(fovRad / 2);
+    const expectedDistance = (2 * 1.3) / 2 / tanHalfV + 1; // + 奥行き半分 (size.z / 2 = 1)
     expect(result.position.z).toBeCloseTo(expectedDistance);
     expect(result.position.x).toBeCloseTo(0);
     expect(result.position.y).toBeCloseTo(0);
+  });
+  it("uses the horizontal fov for wide boxes (aspect-aware)", () => {
+    // 横長 bbox (幅6, 高さ2, 奥行き2)、aspect 2 → tanHalfH = 2 * tanHalfV
+    const box = new THREE.Box3(new THREE.Vector3(-3, -1, -1), new THREE.Vector3(3, 1, 1));
+    const result = calculateCameraFit(box, 45, 1.0, 2);
+    const tanHalfV = Math.tan((45 * Math.PI) / 180 / 2);
+    const distV = 2 / 2 / tanHalfV;
+    const distH = 6 / 2 / (tanHalfV * 2);
+    expect(distH).toBeGreaterThan(distV);
+    expect(result.position.z).toBeCloseTo(distH + 1);
   });
   it("handles an empty bounding box", () => {
     const box = new THREE.Box3();
