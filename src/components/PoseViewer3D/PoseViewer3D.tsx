@@ -5,11 +5,14 @@ import { usePoseStore } from "../../store/usePoseStore";
 import { generateMannequin } from "./mannequin";
 import { computeActivations, aggregateByMuscle } from "./muscles";
 import { MuscleLegend, type MuscleActivation } from "./MuscleLegend";
+import { calculateCameraFit } from "./cameraFit";
 
 export const PoseViewer3D: React.FC = () => {
   const mountRef = useRef<HTMLDivElement>(null);
   const worldLandmarks = usePoseStore((s) => s.worldLandmarks);
   const sceneRef = useRef<THREE.Scene | null>(null);
+  const cameraRef = useRef<THREE.PerspectiveCamera | null>(null);
+  const controlsRef = useRef<OrbitControls | null>(null);
   const muscles: MuscleActivation[] = useMemo(
     () =>
       worldLandmarks && worldLandmarks.length > 0
@@ -32,6 +35,7 @@ export const PoseViewer3D: React.FC = () => {
     const height = mount.clientHeight;
     const camera = new THREE.PerspectiveCamera(45, width / height, 0.1, 100);
     camera.position.set(0, 1, 3); // Slightly elevated
+    cameraRef.current = camera;
 
     // Renderer
     const renderer = new THREE.WebGLRenderer({ antialias: true });
@@ -44,6 +48,7 @@ export const PoseViewer3D: React.FC = () => {
     controls.enableDamping = true;
     controls.dampingFactor = 0.05;
     controls.target.set(0, 0, 0);
+    controlsRef.current = controls;
 
     // Lighting
     const ambientLight = new THREE.AmbientLight(0xffffff, 0.7);
@@ -85,6 +90,8 @@ export const PoseViewer3D: React.FC = () => {
       mount.removeChild(renderer.domElement);
       renderer.dispose();
       sceneRef.current = null;
+      cameraRef.current = null;
+      controlsRef.current = null;
     };
   }, []);
 
@@ -101,6 +108,15 @@ export const PoseViewer3D: React.FC = () => {
 
     if (worldLandmarks && worldLandmarks.length > 0) {
       generateMannequin(worldLandmarks, scene);
+
+      const newMannequin = scene.getObjectByName("mannequin");
+      if (newMannequin && cameraRef.current && controlsRef.current) {
+        const box = new THREE.Box3().setFromObject(newMannequin);
+        const { position, target } = calculateCameraFit(box, cameraRef.current.fov);
+        cameraRef.current.position.copy(position);
+        controlsRef.current.target.copy(target);
+        controlsRef.current.update();
+      }
     }
   }, [worldLandmarks]);
 
