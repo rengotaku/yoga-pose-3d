@@ -15,6 +15,7 @@ import {
   groundMannequin,
 } from "./skinnedMannequin";
 import { applyContactIK } from "./ik";
+import { applyTorsoPushOut } from "./collision";
 
 /** 床グリッドの Y 位置。マネキンの接地面もここに合わせる（#36） */
 const FLOOR_Y = -1;
@@ -170,6 +171,9 @@ export const PoseViewer3D: React.FC = () => {
 
     // 2.6 接地肢の末端を 2-bone IK で床へ届かせ、めり込みを最終接地で吸収（#41）
     applyContactIK(mannequin, worldLandmarks, FLOOR_Y);
+
+    // 2.7 前腕・手の胴体めり込みを push-out で解消（#44）
+    applyTorsoPushOut(mannequin, worldLandmarks);
     groundMannequin(mannequin, FLOOR_Y);
 
     // 3. Apply colors
