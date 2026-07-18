@@ -137,3 +137,21 @@ export const computeHipsRotation = (
   const m = new THREE.Matrix4().makeBasis(xAxis, spineDir, zDir);
   return new THREE.Quaternion().setFromRotationMatrix(m);
 };
+
+/**
+ * 体幹の目標回転（Quaternion）を Spine/Spine1/Spine2 の 3 ボーンに角度分配する。
+ * 合成後の回転が元の targetRotation と一致するように、slerp で重み分割を行う。
+ *
+ * @param targetRotation Spine 全体に適用したい目標の回転
+ * @param weights Spine, Spine1, Spine2 への分配重み。合計が 1 になること（デフォルト: [1/3, 1/3, 1/3]）
+ * @returns [Spine用, Spine1用, Spine2用] の Quaternion 配列
+ */
+export const distributeSpineRotation = (
+  targetRotation: THREE.Quaternion,
+  weights: [number, number, number] = [1 / 3, 1 / 3, 1 / 3]
+): [THREE.Quaternion, THREE.Quaternion, THREE.Quaternion] => {
+  const q0 = new THREE.Quaternion().slerp(targetRotation, weights[0]);
+  const q1 = new THREE.Quaternion().slerp(targetRotation, weights[1]);
+  const q2 = new THREE.Quaternion().slerp(targetRotation, weights[2]);
+  return [q0, q1, q2];
+};
