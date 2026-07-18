@@ -61,6 +61,44 @@ const midpoint = (
   return toVec(a).add(toVec(b)).multiplyScalar(0.5);
 };
 
+/** MediaPipe生座標系(x,z)の中点。y反転しない生の水平位置を扱う用途向け */
+const rawMidpointXZ = (
+  a: RawLandmark | undefined,
+  b: RawLandmark | undefined
+): { x: number; z: number } | null => {
+  if (!a || !b) return null;
+  return { x: (a.x + b.x) / 2, z: (a.z + b.z) / 2 };
+};
+
+/**
+ * 支持脚判定・抗重力の重み付け係数（マジックナンバーをここに集約）。
+ *
+ * 荷重度(0..1)は「足首の接地からの持ち上げ量」と「腰中心からの水平距離」の
+ * 積で決まる: どちらかが大きい（浮いている/腰の真下から離れている）と荷重0に近づく。
+ *
+ * quadriceps/calf は `xxxSwingGain`(遊脚でも屈曲があれば得る係数) と
+ * `xxxSupportGain`(荷重に応じて追加される係数) の和が荷重1のとき従来の係数と
+ * 一致するよう設計している（荷重情報が無かった旧実装との後方互換）。
+ * `xxxAntiGravityGain` は屈曲角に関係なく、荷重そのもの（支持脚として重力に
+ * 抗して姿勢を支える等尺性収縮）から加算される分。
+ */
+export const LOAD_WEIGHT = {
+  /** この高さ(m)以上足首が浮いていれば荷重0とみなす */
+  liftNormalizationM: 0.4,
+  /** 腰中心からこの水平距離(m)以上離れていれば荷重0とみなす */
+  stanceNormalizationM: 0.35,
+  quadSwingGain: 0.5,
+  quadSupportGain: 0.5,
+  quadAntiGravityGain: 0.15,
+  calfSwingGain: 0.5,
+  calfSupportGain: 0.4,
+  calfAntiGravityGain: 0.12,
+  /** 支持脚側の股関節安定化（中殿筋等）による glutes 加算 */
+  glutesAntiGravityGain: 0.3,
+  /** 片脚立ちなど左右の荷重差が大きいほど体幹傾斜の影響を増幅する係数 */
+  coreImbalanceGain: 0.5,
+} as const;
+
 /** 上腕の外転度: 腕が体幹の下方向からどれだけ開いているか（0..1） */
 const abduction = (
   shoulder: RawLandmark | undefined,
@@ -74,6 +112,35 @@ const abduction = (
   if (torsoDown.lengthSq() === 0 || upperArm.lengthSq() === 0) return 0;
   // 腕が下に垂れている(=torsoDown と同方向)とき角度~0 → 外転0
   return clamp01(upperArm.angleTo(torsoDown) / Math.PI);
+};
+
+/**
+ * 支持脚判定: 両足首の高さ（world y, 下向き正）と腰中心からの水平距離から、
+ * 各脚がどれだけ荷重を受けているか（0=完全に遊脚, 1=完全に荷重）を推定する。
+ * 片脚立ちだけでなく両脚立ち（両方高い荷重度）も表現できる。
+ */
+export const detectSupportLegs = (landmarks: RawLandmark[]): { L: number; R: number } => {
+  const g = (i: number): RawLandmark | undefined => landmarks[i];
+  const ankleL = g(LM.LEFT_ANKLE);
+  const ankleR = g(LM.RIGHT_ANKLE);
+  const hipCenter = rawMidpointXZ(g(LM.LEFT_HIP), g(LM.RIGHT_HIP));
+  if (!ankleL || !ankleR || !hipCenter) return { L: 0, R: 0 };
+
+  // y は下向き正: 値が大きいほど接地に近い。より接地している方を地面基準にする。
+  const groundY = Math.max(ankleL.y, ankleR.y);
+  const heightScore = (ankle: RawLandmark): number =>
+    clamp01(1 - (groundY - ankle.y) / LOAD_WEIGHT.liftNormalizationM);
+  const stanceScore = (ankle: RawLandmark): number => {
+    const dx = ankle.x - hipCenter.x;
+    const dz = ankle.z - hipCenter.z;
+    const dist = Math.sqrt(dx * dx + dz * dz);
+    return clamp01(1 - dist / LOAD_WEIGHT.stanceNormalizationM);
+  };
+
+  return {
+    L: heightScore(ankleL) * stanceScore(ankleL),
+    R: heightScore(ankleR) * stanceScore(ankleR),
+  };
 };
 
 export type MuscleId =
@@ -125,6 +192,7 @@ export const computeActivations = (landmarks: RawLandmark[]): ActivationMap => {
   const g = (i: number): RawLandmark | undefined => landmarks[i];
   const shoulderMid = midpoint(g(LM.LEFT_SHOULDER), g(LM.RIGHT_SHOULDER));
   const hipMid = midpoint(g(LM.LEFT_HIP), g(LM.RIGHT_HIP));
+  const support = detectSupportLegs(landmarks);
 
   const out: ActivationMap = {};
 
@@ -151,14 +219,32 @@ export const computeActivations = (landmarks: RawLandmark[]): ActivationMap => {
   ): void => {
     const kneeFlex = flexion(angleAt(g(hip), g(knee), g(ankle)));
     const hipFlex = flexion(angleAt(g(sh), g(hip), g(knee)));
-    out[key("quadriceps", side)] = clamp01(0.05 + kneeFlex);
+    const loadWeight = support[side];
+
+    // 抗重力: 荷重が乗っているほど膝屈曲の quadriceps 寄与を強め、
+    // 荷重そのもの（等尺性の支持）も加算する。遊脚（荷重0）でも屈曲があれば
+    // 最低限の寄与(quadSwingGain)は残す。
+    const quadFlexGain =
+      LOAD_WEIGHT.quadSwingGain + loadWeight * LOAD_WEIGHT.quadSupportGain;
+    out[key("quadriceps", side)] = clamp01(
+      0.05 + kneeFlex * quadFlexGain + loadWeight * LOAD_WEIGHT.quadAntiGravityGain
+    );
+
     out[key("hamstrings", side)] = clamp01(0.05 + (kneeFlex + hipFlex) * 0.5);
-    out[key("glutes", side)] = clamp01(0.05 + hipFlex);
+    // 支持脚側は股関節安定化（中殿筋等）が働くため荷重度で加算する
+    out[key("glutes", side)] = clamp01(
+      0.05 + hipFlex + loadWeight * LOAD_WEIGHT.glutesAntiGravityGain
+    );
+
     // ふくらはぎ: 足趾があれば足関節角、無ければ膝屈曲で近似
     const ankleFlex = landmarks[foot]
       ? flexion(angleAt(g(knee), g(ankle), g(foot)))
       : kneeFlex * 0.5;
-    out[key("calf", side)] = clamp01(0.05 + ankleFlex * 0.9);
+    const calfFlexGain =
+      LOAD_WEIGHT.calfSwingGain + loadWeight * LOAD_WEIGHT.calfSupportGain;
+    out[key("calf", side)] = clamp01(
+      0.05 + ankleFlex * calfFlexGain + loadWeight * LOAD_WEIGHT.calfAntiGravityGain
+    );
   };
   leg(
     "L",
@@ -183,7 +269,10 @@ export const computeActivations = (landmarks: RawLandmark[]): ActivationMap => {
     const spine = shoulderMid.clone().sub(hipMid); // 腰→肩（上向き）
     const vertical = new THREE.Vector3(0, 1, 0);
     const lean = spine.lengthSq() === 0 ? 0 : spine.angleTo(vertical) / (Math.PI / 2);
-    out[key("core")] = clamp01(0.08 + lean * 0.9);
+    // 片脚立ちなど左右の荷重差が大きいほどバランス保持に体幹が使われるため増幅する
+    const loadImbalance = Math.abs(support.L - support.R);
+    const coreGain = 1 + loadImbalance * LOAD_WEIGHT.coreImbalanceGain;
+    out[key("core")] = clamp01(0.08 + lean * 0.9 * coreGain);
   } else {
     out[key("core")] = 0;
   }
