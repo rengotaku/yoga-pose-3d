@@ -35,7 +35,8 @@ const addLimb = (
   a: RawLandmark | undefined,
   b: RawLandmark | undefined,
   radius: number,
-  material: THREE.Material
+  material: THREE.Material,
+  muscles: string[] = []
 ): void => {
   if (!a || !b) return;
   const av = toVec(a);
@@ -50,6 +51,7 @@ const addLimb = (
     new THREE.Vector3(0, 1, 0),
     bv.clone().sub(av).normalize()
   );
+  mesh.userData.muscles = muscles;
   group.add(mesh);
 };
 
@@ -58,11 +60,13 @@ const addJoint = (
   group: THREE.Group,
   p: RawLandmark | undefined,
   radius: number,
-  material: THREE.Material
+  material: THREE.Material,
+  muscles: string[] = []
 ): void => {
   if (!p) return;
   const mesh = new THREE.Mesh(new THREE.SphereGeometry(radius, 16, 16), material);
   mesh.position.copy(toVec(p));
+  mesh.userData.muscles = muscles;
   group.add(mesh);
 };
 
@@ -107,6 +111,7 @@ const addTorso = (
     shoulderMid.clone().sub(hipMid).normalize()
   );
   mesh.name = "torso";
+  mesh.userData.muscles = ["core"];
   group.add(mesh);
 };
 
@@ -138,22 +143,27 @@ export const generateMannequin = (
     g(LM.LEFT_SHOULDER),
     g(LM.LEFT_ELBOW),
     0.05,
-    heatMaterial(a("biceps:L"))
+    heatMaterial(a("biceps:L")),
+    ["biceps"]
   );
-  addLimb(group, g(LM.LEFT_ELBOW), g(LM.LEFT_WRIST), 0.04, heatMaterial(a("forearm:L")));
+  addLimb(group, g(LM.LEFT_ELBOW), g(LM.LEFT_WRIST), 0.04, heatMaterial(a("forearm:L")), [
+    "forearm",
+  ]);
   addLimb(
     group,
     g(LM.RIGHT_SHOULDER),
     g(LM.RIGHT_ELBOW),
     0.05,
-    heatMaterial(a("biceps:R"))
+    heatMaterial(a("biceps:R")),
+    ["biceps"]
   );
   addLimb(
     group,
     g(LM.RIGHT_ELBOW),
     g(LM.RIGHT_WRIST),
     0.04,
-    heatMaterial(a("forearm:R"))
+    heatMaterial(a("forearm:R")),
+    ["forearm"]
   );
 
   // --- 下肢（大腿は四頭筋/ハムの max でヒート） ---
@@ -162,23 +172,29 @@ export const generateMannequin = (
     g(LM.LEFT_HIP),
     g(LM.LEFT_KNEE),
     0.08,
-    heatMaterial(Math.max(a("quadriceps:L"), a("hamstrings:L")))
+    heatMaterial(Math.max(a("quadriceps:L"), a("hamstrings:L"))),
+    ["quadriceps", "hamstrings"]
   );
-  addLimb(group, g(LM.LEFT_KNEE), g(LM.LEFT_ANKLE), 0.055, heatMaterial(a("calf:L")));
+  addLimb(group, g(LM.LEFT_KNEE), g(LM.LEFT_ANKLE), 0.055, heatMaterial(a("calf:L")), [
+    "calf",
+  ]);
   addLimb(
     group,
     g(LM.RIGHT_HIP),
     g(LM.RIGHT_KNEE),
     0.08,
-    heatMaterial(Math.max(a("quadriceps:R"), a("hamstrings:R")))
+    heatMaterial(Math.max(a("quadriceps:R"), a("hamstrings:R"))),
+    ["quadriceps", "hamstrings"]
   );
-  addLimb(group, g(LM.RIGHT_KNEE), g(LM.RIGHT_ANKLE), 0.055, heatMaterial(a("calf:R")));
+  addLimb(group, g(LM.RIGHT_KNEE), g(LM.RIGHT_ANKLE), 0.055, heatMaterial(a("calf:R")), [
+    "calf",
+  ]);
 
   // --- 関節を丸める（肩=三角筋 / 股=大臀筋 はヒート、他は中立） ---
-  addJoint(group, g(LM.LEFT_SHOULDER), 0.06, heatMaterial(a("deltoid:L")));
-  addJoint(group, g(LM.RIGHT_SHOULDER), 0.06, heatMaterial(a("deltoid:R")));
-  addJoint(group, g(LM.LEFT_HIP), 0.07, heatMaterial(a("glutes:L")));
-  addJoint(group, g(LM.RIGHT_HIP), 0.07, heatMaterial(a("glutes:R")));
+  addJoint(group, g(LM.LEFT_SHOULDER), 0.06, heatMaterial(a("deltoid:L")), ["deltoid"]);
+  addJoint(group, g(LM.RIGHT_SHOULDER), 0.06, heatMaterial(a("deltoid:R")), ["deltoid"]);
+  addJoint(group, g(LM.LEFT_HIP), 0.07, heatMaterial(a("glutes:L")), ["glutes"]);
+  addJoint(group, g(LM.RIGHT_HIP), 0.07, heatMaterial(a("glutes:R")), ["glutes"]);
   addJoint(group, g(LM.LEFT_ELBOW), 0.045, neutralMaterial());
   addJoint(group, g(LM.RIGHT_ELBOW), 0.045, neutralMaterial());
   addJoint(group, g(LM.LEFT_WRIST), 0.04, neutralMaterial());

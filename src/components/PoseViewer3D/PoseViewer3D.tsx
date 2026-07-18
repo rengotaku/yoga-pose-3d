@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { usePoseStore } from "../../store/usePoseStore";
@@ -13,6 +13,14 @@ export const PoseViewer3D: React.FC = () => {
   const sceneRef = useRef<THREE.Scene | null>(null);
   const cameraRef = useRef<THREE.PerspectiveCamera | null>(null);
   const controlsRef = useRef<OrbitControls | null>(null);
+
+  const [selectedMuscle, setSelectedMuscle] = useState<string | null>(null);
+  const [hoveredMuscles, setHoveredMuscles] = useState<{
+    ids: string[];
+    x: number;
+    y: number;
+  } | null>(null);
+
   const muscles: MuscleActivation[] = useMemo(
     () =>
       worldLandmarks && worldLandmarks.length > 0
@@ -120,6 +128,94 @@ export const PoseViewer3D: React.FC = () => {
     }
   }, [worldLandmarks]);
 
+  // Highlight selected muscle
+  useEffect(() => {
+    if (!sceneRef.current) return;
+    const mannequin = sceneRef.current.getObjectByName("mannequin");
+    if (!mannequin) return;
+
+    mannequin.traverse((child) => {
+      if (child instanceof THREE.Mesh) {
+        const meshMuscles = child.userData.muscles as string[] | undefined;
+        const mat = child.material as THREE.MeshStandardMaterial;
+
+        if (mat.userData.originalEmissiveIntensity === undefined) {
+          mat.userData.originalEmissiveIntensity = mat.emissiveIntensity;
+          mat.userData.originalOpacity = mat.opacity;
+          mat.userData.originalTransparent = mat.transparent;
+        }
+
+        if (selectedMuscle) {
+          if (meshMuscles && meshMuscles.includes(selectedMuscle)) {
+            mat.emissiveIntensity = mat.userData.originalEmissiveIntensity + 0.5;
+            mat.opacity = 1;
+            mat.transparent = mat.userData.originalTransparent;
+          } else {
+            mat.emissiveIntensity = 0;
+            mat.opacity = 0.2;
+            mat.transparent = true;
+          }
+        } else {
+          mat.emissiveIntensity = mat.userData.originalEmissiveIntensity;
+          mat.opacity = mat.userData.originalOpacity;
+          mat.transparent = mat.userData.originalTransparent;
+        }
+        mat.needsUpdate = true;
+      }
+    });
+  }, [selectedMuscle, worldLandmarks]);
+
+  // Raycaster for hover
+  useEffect(() => {
+    const mount = mountRef.current;
+    if (!mount) return;
+
+    const raycaster = new THREE.Raycaster();
+    const mouse = new THREE.Vector2();
+
+    const handlePointerMove = (e: PointerEvent) => {
+      if (!cameraRef.current || !sceneRef.current) return;
+
+      const rect = mount.getBoundingClientRect();
+      mouse.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+      mouse.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+
+      raycaster.setFromCamera(mouse, cameraRef.current);
+
+      const mannequin = sceneRef.current.getObjectByName("mannequin");
+      if (!mannequin) {
+        setHoveredMuscles(null);
+        return;
+      }
+
+      const intersects = raycaster.intersectObject(mannequin, true);
+      let found = false;
+      for (const hit of intersects) {
+        const ids = hit.object.userData.muscles as string[] | undefined;
+        if (ids && ids.length > 0) {
+          setHoveredMuscles({ ids, x: e.clientX - rect.left, y: e.clientY - rect.top });
+          found = true;
+          break;
+        }
+      }
+      if (!found) {
+        setHoveredMuscles(null);
+      }
+    };
+
+    const handlePointerLeave = () => {
+      setHoveredMuscles(null);
+    };
+
+    mount.addEventListener("pointermove", handlePointerMove);
+    mount.addEventListener("pointerleave", handlePointerLeave);
+
+    return () => {
+      mount.removeEventListener("pointermove", handlePointerMove);
+      mount.removeEventListener("pointerleave", handlePointerLeave);
+    };
+  }, []);
+
   return (
     <div className="w-full flex flex-col gap-3">
       <div className="w-full h-full min-h-[400px] rounded-lg overflow-hidden border border-gray-200 relative">
@@ -131,8 +227,32 @@ export const PoseViewer3D: React.FC = () => {
             </p>
           </div>
         )}
+        {hoveredMuscles && (
+          <div
+            className="absolute pointer-events-none bg-gray-900/90 text-white text-xs p-2 rounded shadow-lg transform -translate-x-1/2 -translate-y-full mt-[-10px] whitespace-nowrap z-10"
+            style={{ left: hoveredMuscles.x, top: hoveredMuscles.y }}
+          >
+            {hoveredMuscles.ids.map((id) => {
+              const m = muscles.find((m) => m.id === id);
+              return m ? (
+                <div key={id} className="flex justify-between gap-4">
+                  <span>{m.label}</span>
+                  <span className="font-mono text-gray-300">
+                    {Math.round(m.value * 100)}
+                  </span>
+                </div>
+              ) : null;
+            })}
+          </div>
+        )}
       </div>
-      {muscles.length > 0 && <MuscleLegend activations={muscles} />}
+      {muscles.length > 0 && (
+        <MuscleLegend
+          activations={muscles}
+          selectedMuscle={selectedMuscle}
+          onSelectMuscle={setSelectedMuscle}
+        />
+      )}
     </div>
   );
 };

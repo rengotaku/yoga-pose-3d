@@ -1,6 +1,8 @@
 import { describe, it, expect } from "vitest";
+import { render, fireEvent } from "@testing-library/react";
 import * as THREE from "three";
 import { generateMannequin } from "./mannequin";
+import { MuscleLegend, type MuscleActivation } from "./MuscleLegend";
 import { calculateCameraFit } from "./cameraFit";
 import {
   angleAt,
@@ -138,6 +140,26 @@ describe("generateMannequin", () => {
     const scene = new THREE.Scene();
     expect(() => generateMannequin([{ x: 0, y: 0, z: 0 }], scene)).not.toThrow();
   });
+
+  it("assigns muscle IDs to mesh userData", () => {
+    const scene = new THREE.Scene();
+    const mannequin = generateMannequin(buildStanding(), scene);
+
+    const torso = mannequin.getObjectByName("torso");
+    expect(torso?.userData.muscles).toContain("core");
+
+    let foundBiceps = false;
+    let foundHamstrings = false;
+    mannequin.traverse((child) => {
+      if (child instanceof THREE.Mesh) {
+        const m = child.userData.muscles || [];
+        if (m.includes("biceps")) foundBiceps = true;
+        if (m.includes("hamstrings")) foundHamstrings = true;
+      }
+    });
+    expect(foundBiceps).toBe(true);
+    expect(foundHamstrings).toBe(true);
+  });
 });
 
 describe("calculateCameraFit", () => {
@@ -167,5 +189,44 @@ describe("calculateCameraFit", () => {
     expect(result.position.x).toBe(0);
     expect(result.position.y).toBe(1);
     expect(result.position.z).toBe(3);
+  });
+});
+
+describe("MuscleLegend", () => {
+  it("calls onSelectMuscle when a muscle row is clicked", () => {
+    const activations: MuscleActivation[] = [
+      { id: "biceps", label: "上腕", value: 0.8 },
+      { id: "core", label: "体幹", value: 0.5 },
+    ];
+    let selected: string | null = null;
+    const { getByText } = render(
+      <MuscleLegend
+        activations={activations}
+        selectedMuscle={null}
+        onSelectMuscle={(id) => {
+          selected = id;
+        }}
+      />
+    );
+
+    fireEvent.click(getByText("上腕"));
+    expect(selected).toBe("biceps");
+  });
+
+  it("toggles off when the selected muscle is clicked again", () => {
+    const activations: MuscleActivation[] = [{ id: "biceps", label: "上腕", value: 0.8 }];
+    let selected: string | null = "biceps";
+    const { getByText } = render(
+      <MuscleLegend
+        activations={activations}
+        selectedMuscle="biceps"
+        onSelectMuscle={(id) => {
+          selected = id;
+        }}
+      />
+    );
+
+    fireEvent.click(getByText("上腕"));
+    expect(selected).toBeNull();
   });
 });
