@@ -8,6 +8,7 @@ import {
   LIMB_BONE_MAPPINGS,
   computeHipsRotation,
   distributeSpineRotation,
+  BONE_ALIASES,
 } from "./retarget";
 import { heatColor } from "./muscles";
 import type { RawLandmark, ActivationMap } from "./muscles";
@@ -204,6 +205,15 @@ export const applyPoseToSkeleton = (
   }
 };
 
+export const canonicalizeBoneName = (name: string): string => {
+  for (const [canonical, aliases] of Object.entries(BONE_ALIASES)) {
+    if (aliases.includes(name)) {
+      return canonical;
+    }
+  }
+  return name;
+};
+
 export const getVertexMuscleId = (
   vertexIndex: number,
   geometry: THREE.BufferGeometry,
@@ -226,8 +236,9 @@ export const getVertexMuscleId = (
   const bone = skeleton.bones[dominantBoneIndex];
   if (!bone) return null;
 
-  const boneName = bone.name;
-  const isLeft = boneName.toLowerCase().includes("left");
+  const originalName = bone.name;
+  const boneName = canonicalizeBoneName(originalName);
+  const isLeft = boneName.toLowerCase().includes("left") || originalName.endsWith("_l");
 
   if (boneName.includes("Hips")) {
     const positionAttr = geometry.getAttribute("position");

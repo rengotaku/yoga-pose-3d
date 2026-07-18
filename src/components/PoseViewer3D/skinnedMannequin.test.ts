@@ -9,6 +9,7 @@ import {
   musclesAtFace,
   computeSkeletonBoundingBox,
   setupMannequinMaterials,
+  canonicalizeBoneName,
 } from "./skinnedMannequin";
 import { MUSCLE_ORDER } from "./muscles";
 
@@ -95,6 +96,40 @@ describe("getVertexMuscleId", () => {
     expect(id1).toBe("hamstrings:L");
     expect(MUSCLE_ORDER).toContain(id0?.split(":")[0]);
     expect(MUSCLE_ORDER).toContain(id1?.split(":")[0]);
+  });
+});
+
+describe("getVertexMuscleId with human-base aliases", () => {
+  it("resolves correct muscle for human-base bone names", () => {
+    const mesh = createMockSkinnedMesh();
+    mesh.skeleton!.bones[1].name = "thigh_l";
+
+    const id0 = getVertexMuscleId(0, mesh.geometry, mesh.skeleton!);
+    const id1 = getVertexMuscleId(1, mesh.geometry, mesh.skeleton!);
+
+    expect(id0).toBe("quadriceps:L");
+    expect(id1).toBe("hamstrings:L");
+
+    mesh.skeleton!.bones[1].name = "thigh_r";
+    const id2 = getVertexMuscleId(0, mesh.geometry, mesh.skeleton!);
+    const id3 = getVertexMuscleId(1, mesh.geometry, mesh.skeleton!);
+    expect(id2).toBe("quadriceps:R");
+    expect(id3).toBe("hamstrings:R");
+  });
+});
+
+describe("canonicalizeBoneName", () => {
+  it("returns canonical mixamo name for human-base aliases", () => {
+    expect(canonicalizeBoneName("pelvis")).toBe("Hips");
+    expect(canonicalizeBoneName("spine_01")).toBe("Spine");
+    expect(canonicalizeBoneName("upperarm_l")).toBe("LeftArm");
+    expect(canonicalizeBoneName("thigh_r")).toBe("RightUpLeg");
+  });
+
+  it("returns original name if no alias matches", () => {
+    expect(canonicalizeBoneName("mixamorigHips")).toBe("mixamorigHips");
+    expect(canonicalizeBoneName("HeadTop_End")).toBe("HeadTop_End");
+    expect(canonicalizeBoneName("head_leaf")).toBe("head_leaf");
   });
 });
 

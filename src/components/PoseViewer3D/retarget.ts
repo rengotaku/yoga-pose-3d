@@ -1,9 +1,35 @@
 import * as THREE from "three";
 import { LM, type RawLandmark, toVec } from "./muscles";
 
+export const BONE_ALIASES: Record<string, string[]> = {
+  Hips: ["pelvis"],
+  Spine: ["spine_01"],
+  Spine1: ["spine_02"],
+  Spine2: ["spine_03"],
+  Neck: ["neck_01"],
+  Head: ["head"],
+  LeftShoulder: ["clavicle_l"],
+  RightShoulder: ["clavicle_r"],
+  LeftArm: ["upperarm_l"],
+  LeftForeArm: ["lowerarm_l"],
+  LeftHand: ["hand_l"],
+  RightArm: ["upperarm_r"],
+  RightForeArm: ["lowerarm_r"],
+  RightHand: ["hand_r"],
+  LeftUpLeg: ["thigh_l"],
+  LeftLeg: ["calf_l"],
+  LeftFoot: ["foot_l"],
+  LeftToeBase: ["ball_l"],
+  RightUpLeg: ["thigh_r"],
+  RightLeg: ["calf_r"],
+  RightFoot: ["foot_r"],
+  RightToeBase: ["ball_r"],
+};
+
 /**
  * 実際のボーン名リストから、mixamorig標準名に対応する名前をサフィックス一致で探す。
  * GLTFLoader がコロンを除去・置換した（例: "mixamorigHips"）ケースに対応する。
+ * 見つからない場合は別名リスト(BONE_ALIASES)との完全一致で探す。
  * @param mixamoName 探したい標準ボーン名（例: "mixamorig:LeftUpLeg"）
  * @param actualBoneNames ロードされたメッシュが持つ実際のボーン名配列
  */
@@ -14,7 +40,17 @@ export const resolveBoneName = (
   const parts = mixamoName.split(":");
   const suffix = parts[parts.length - 1];
   if (!suffix) return undefined;
-  return actualBoneNames.find((name) => name.endsWith(suffix));
+
+  let found = actualBoneNames.find((name) => name.endsWith(suffix));
+  if (found) return found;
+
+  const aliases = BONE_ALIASES[suffix];
+  if (aliases) {
+    found = actualBoneNames.find((name) => aliases.includes(name));
+    if (found) return found;
+  }
+
+  return undefined;
 };
 
 /**
