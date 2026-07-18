@@ -123,7 +123,7 @@ describe("generateMannequin", () => {
     expect(scene.children).toContain(mannequin);
   });
 
-  it("builds a fleshed body: a torso mesh plus 8 limb capsules", () => {
+  it("builds a fleshed body: a torso mesh plus 10 limb capsules", () => {
     const scene = new THREE.Scene();
     const mannequin = generateMannequin(buildStanding(), scene);
 
@@ -132,8 +132,41 @@ describe("generateMannequin", () => {
     const capsules = mannequin.children.filter(
       (c) => (c as THREE.Mesh).geometry instanceof THREE.CapsuleGeometry
     );
-    // 上腕2 + 前腕2 + 大腿2 + 下腿2 = 8
-    expect(capsules.length).toBe(8);
+    // 上腕2 + 前腕2 + 大腿(四頭筋+ハム)4 + 下腿2 = 10
+    expect(capsules.length).toBe(10);
+  });
+
+  it("splits each thigh into a quadriceps-only and a hamstrings-only capsule", () => {
+    const scene = new THREE.Scene();
+    const mannequin = generateMannequin(buildStanding(), scene);
+
+    const capsules = mannequin.children.filter(
+      (c) => (c as THREE.Mesh).geometry instanceof THREE.CapsuleGeometry
+    ) as THREE.Mesh[];
+
+    const quadOnly = capsules.filter(
+      (c) => (c.userData.muscles as string[]).join(",") === "quadriceps"
+    );
+    const hamOnly = capsules.filter(
+      (c) => (c.userData.muscles as string[]).join(",") === "hamstrings"
+    );
+    // 左右それぞれ1つずつ
+    expect(quadOnly.length).toBe(2);
+    expect(hamOnly.length).toBe(2);
+
+    // 大腿カプセルはもう四頭筋/ハムの両方を1つのメッシュで持たない
+    const mixedThigh = capsules.filter((c) => {
+      const m = c.userData.muscles as string[];
+      return m.includes("quadriceps") && m.includes("hamstrings");
+    });
+    expect(mixedThigh.length).toBe(0);
+
+    // 前後に分離しているので、同じ左脚内の四頭筋/ハムの位置は異なる
+    const leftQuad = quadOnly.find((c) => c.position.x > 0);
+    const leftHam = hamOnly.find((c) => c.position.x > 0);
+    expect(leftQuad).toBeDefined();
+    expect(leftHam).toBeDefined();
+    expect(leftQuad!.position.distanceTo(leftHam!.position)).toBeGreaterThan(0);
   });
 
   it("does not throw on incomplete landmarks", () => {
