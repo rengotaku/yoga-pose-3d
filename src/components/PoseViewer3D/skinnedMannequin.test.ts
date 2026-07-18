@@ -72,6 +72,7 @@ describe("setupMannequinMaterials", () => {
       true
     );
     expect(mesh.geometry.hasAttribute("color")).toBe(true);
+    expect(mesh.material.onBeforeCompile).toBeDefined();
   });
 });
 
@@ -107,7 +108,9 @@ describe("applyMuscleHeatColors", () => {
     );
 
     const colorAttr = mesh.geometry.getAttribute("color");
+    const emissionAttr = mesh.geometry.getAttribute("emissionIntensity");
     expect(colorAttr).toBeDefined();
+    expect(emissionAttr).toBeDefined();
 
     // quadriceps is selected (index 0).
     const r0 = colorAttr.getX(0);
@@ -115,6 +118,10 @@ describe("applyMuscleHeatColors", () => {
 
     expect(r0).not.toBe(new THREE.Color(0xb98a7a).r); // not neutral
     expect(r1).toBeCloseTo(new THREE.Color(0xb98a7a).r, 2); // neutral
+
+    // selected muscle should have emission = 1.0, non-selected = 0.0
+    expect(emissionAttr!.getX(0)).toBe(1.0);
+    expect(emissionAttr!.getX(1)).toBe(0.0);
   });
 });
 
