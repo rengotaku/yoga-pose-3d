@@ -10,6 +10,7 @@ import {
   computeSkeletonBoundingBox,
   setupMannequinMaterials,
 } from "./skinnedMannequin";
+import { MUSCLE_ORDER } from "./muscles";
 
 const buildMockLandmarks = (): RawLandmark[] => {
   const lm: RawLandmark[] = Array.from({ length: 33 }, () => ({ x: 0, y: 0, z: 0 }));
@@ -91,6 +92,8 @@ describe("getVertexMuscleId", () => {
 
     expect(id0).toBe("quadriceps:L");
     expect(id1).toBe("hamstrings:L");
+    expect(MUSCLE_ORDER).toContain(id0?.split(":")[0]);
+    expect(MUSCLE_ORDER).toContain(id1?.split(":")[0]);
   });
 });
 
@@ -121,6 +124,9 @@ describe("musclesAtFace", () => {
     const muscles = musclesAtFace(mesh, 0);
     expect(muscles).toContain("quadriceps");
     expect(muscles).toContain("hamstrings");
+    for (const m of muscles) {
+      expect(MUSCLE_ORDER).toContain(m as (typeof MUSCLE_ORDER)[number]);
+    }
   });
 });
 
@@ -131,6 +137,6 @@ describe("computeSkeletonBoundingBox", () => {
     // Needs updateMatrixWorld to apply position
     mesh.skeleton!.bones[0].updateMatrixWorld(true);
     const box = computeSkeletonBoundingBox(mesh.skeleton!);
-    expect(box.max.x).toBeCloseTo(10);
+    expect(box.max.x).toBeCloseTo(10.15);
   });
 });
