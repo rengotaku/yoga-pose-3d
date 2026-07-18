@@ -15,8 +15,11 @@
    - 推論結果（2D `landmarks`, 3D `worldLandmarks`）は再び `usePoseStore` に格納されます。
 4. **結果の描画 (2D / 3D)**
    - **2D**: `PoseCanvas` が `landmarks` を購読し、元画像の上にオーバーレイとして骨格を描画します。
-   - **3D**: `PoseViewer3D` が `worldLandmarks` を購読し、リグ付き人体マネキン（`public/models/mannequin.glb`、UE 系命名スケルトンのスキンメッシュ。原作 [Quaternius](https://quaternius.com/) の human-base、CC0。[Mesh2Motion/mesh2motion-app](https://github.com/Mesh2Motion/mesh2motion-app) の `static/models-variation/human-base.glb` 由来）を Three.js で描画します。ポーズは `retarget.ts` / `skinnedMannequin.ts` の FK ソルバが landmark からボーン回転を解いて適用（回転リターゲット。ADR 0003）。使用筋アクティベーション（`muscles.ts` が関節角度から推定）は頂点カラーでヒートマップ着色され、大腿はバインド空間の前後で四頭筋/ハムストリングスに塗り分けます。ポーズ変化時にはボーン座標群のバウンディングボックスからカメラ距離を自動調整（`cameraFit.ts`）し、見切れを防ぎます。
-   - **使用筋の凡例と連動**: `PoseViewer3D` は `aggregateByMuscle` で筋群別アクティベーションを算出し、3Dビューの下に `MuscleLegend` として一覧表示します（EMG 実測ではなく幾何推定）。凡例の筋をクリックすると頂点カラーの再計算で該当部位のみヒート着色（他部位は中立色化）、3D 部位のホバーでは交差 face の頂点 skinIndex から筋群を逆引き（`musclesAtFace`）して筋名ツールチップを表示します。
+   - **3D**: `PoseViewer3D` が `worldLandmarks` を購読し、リグ付き人体マネキン（`public/models/mannequin.glb`、UE 系命名スケルトンのスキンメッシュ。原作 [Quaternius](https://quaternius.com/) の human-base、CC0。[Mesh2Motion/mesh2motion-app](https://github.com/Mesh2Motion/mesh2motion-app) の `static/models-variation/human-base.glb` 由来）を Three.js で描画します。ポーズは `retarget.ts` / `skinnedMannequin.ts` の FK ソルバが landmark からボーン回転を解いて適用（回転リターゲット。ADR 0003）。体幹の目標回転は `distributeSpineRotation` が Spine/Spine1/Spine2 の 3 ボーンへ角度分配し（#26）、前屈系で腰が鋭く折れるのを防ぎます。使用筋アクティベーション（`muscles.ts` が関節角度から推定）は頂点カラーでヒートマップ着色され、大腿はバインド空間の前後で四頭筋/ハムストリングスに塗り分けます。ポーズ変化時にはボーン bbox の縦横を視錐台（縦 fov + アスペクト比）にフィットさせてカメラ距離を自動調整（`cameraFit.ts`、#27）し、見切れなく大きく映します。
+   - **使用筋の凡例と連動**: `PoseViewer3D` は `aggregateByMuscle` で筋群別アクティベーションを算出し、3Dビューの下に `MuscleLegend` として一覧表示します（EMG 実測ではなく幾何推定）。凡例の筋をクリックすると頂点カラーの再計算で該当部位のみヒート着色（他部位は中立色化）に加え、頂点属性 `emissionIntensity`（`onBeforeCompile` のシェーダ注入で参照）により選択筋のみエミッシブ発光します（#28）。3D 部位のホバーでは交差 face の頂点 skinIndex から筋群を逆引き（`musclesAtFace`）して筋名ツールチップを表示します（ボーン命名は `canonicalizeBoneName` で mixamorig 系へ正準化してから筋群判定）。
+
+5. **回帰検証（手動実行）**
+   - `make verify-poses` が `e2e/poses/` の代表ポーズ画像（逆転・深い後屈・アームバランス。出典/ライセンスは `e2e/poses/SOURCES.md`）をアップロードし、3D マネキンのスクショを `e2e/output/` に生成します（playwright。dev サーバ起動が前提、CI には含めません）。判定は目視です。
 
 ## ディレクトリ構成と役割 (Directory Structure)
 
