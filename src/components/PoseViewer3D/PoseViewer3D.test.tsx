@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import * as THREE from "three";
 import { generateMannequin } from "./mannequin";
+import { calculateCameraFit } from "./cameraFit";
 import {
   angleAt,
   flexion,
@@ -136,5 +137,35 @@ describe("generateMannequin", () => {
   it("does not throw on incomplete landmarks", () => {
     const scene = new THREE.Scene();
     expect(() => generateMannequin([{ x: 0, y: 0, z: 0 }], scene)).not.toThrow();
+  });
+});
+
+describe("calculateCameraFit", () => {
+  it("calculates correct camera position and target for a given bounding box", () => {
+    const box = new THREE.Box3(new THREE.Vector3(-1, -1, -1), new THREE.Vector3(1, 1, 1));
+    // BoundingSphere radius is sqrt(3) ~= 1.732
+    const result = calculateCameraFit(box, 45, 1.3);
+
+    expect(result.target.x).toBeCloseTo(0);
+    expect(result.target.y).toBeCloseTo(0);
+    expect(result.target.z).toBeCloseTo(0);
+
+    const fovRad = (45 * Math.PI) / 180;
+    const expectedDistance = (Math.sqrt(3) * 1.3) / Math.sin(fovRad / 2);
+    expect(result.position.z).toBeCloseTo(expectedDistance);
+    expect(result.position.x).toBeCloseTo(0);
+    expect(result.position.y).toBeCloseTo(0);
+  });
+
+  it("handles an empty bounding box", () => {
+    const box = new THREE.Box3();
+    const result = calculateCameraFit(box, 45, 1.3);
+
+    expect(result.target.x).toBe(0);
+    expect(result.target.y).toBe(0);
+    expect(result.target.z).toBe(0);
+    expect(result.position.x).toBe(0);
+    expect(result.position.y).toBe(1);
+    expect(result.position.z).toBe(3);
   });
 });
