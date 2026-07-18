@@ -49,7 +49,17 @@ describe("resolveBoneName", () => {
     expect(resolveBoneName("mixamorig:HeadTop_End", actualNames)).toBe("HeadTop_End");
   });
 
-  it("returns undefined if suffix not found", () => {
+  it("resolves bone name by exact match from aliases if suffix not found", () => {
+    const actualNames = ["pelvis", "spine_01", "upperarm_l", "head_leaf"];
+
+    expect(resolveBoneName("mixamorig:Hips", actualNames)).toBe("pelvis");
+    expect(resolveBoneName("mixamorig:Spine", actualNames)).toBe("spine_01");
+    expect(resolveBoneName("mixamorig:LeftArm", actualNames)).toBe("upperarm_l");
+    // head_leaf should not match Head
+    expect(resolveBoneName("mixamorig:Head", actualNames)).toBeUndefined();
+  });
+
+  it("returns undefined if suffix not found and no alias matches", () => {
     const actualNames = ["mixamorigHips", "mixamorigLeftUpLeg"];
     expect(resolveBoneName("mixamorig:Spine", actualNames)).toBeUndefined();
   });
