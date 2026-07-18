@@ -10,6 +10,8 @@ import {
   computeSkeletonBoundingBox,
   setupMannequinMaterials,
   canonicalizeBoneName,
+  computeLowestPointY,
+  groundMannequin,
 } from "./skinnedMannequin";
 import { MUSCLE_ORDER } from "./muscles";
 
@@ -180,5 +182,68 @@ describe("computeSkeletonBoundingBox", () => {
     mesh.skeleton!.bones[0].updateMatrixWorld(true);
     const box = computeSkeletonBoundingBox(mesh.skeleton!);
     expect(box.max.x).toBeCloseTo(10.15);
+  });
+});
+
+describe("computeLowestPointY", () => {
+  it("returns the lowest skinned vertex Y in world space", () => {
+    const mesh = createMockSkinnedMesh();
+    const root = new THREE.Group();
+    root.add(mesh.skeleton!.bones[0]);
+    root.add(mesh);
+    root.position.y = 2;
+    root.updateMatrixWorld(true);
+    // 両頂点とも y=0 → root オフセット分で world 最小 Y は 2
+    expect(computeLowestPointY(root)).toBeCloseTo(2);
+  });
+
+  it("reflects bone deformation (skinned position, not bind pose)", () => {
+    const mesh = createMockSkinnedMesh();
+    const root = new THREE.Group();
+    root.add(mesh.skeleton!.bones[0]);
+    root.add(mesh);
+    // vertex0 は bone[1] に 100% スキン → bone[1] を下げると最下点も下がる
+    mesh.skeleton!.bones[1].position.set(0, -0.5, 0);
+    root.updateMatrixWorld(true);
+    expect(computeLowestPointY(root)).toBeCloseTo(-0.5);
+  });
+
+  it("returns null when there is no skinned mesh", () => {
+    expect(computeLowestPointY(new THREE.Group())).toBeNull();
+  });
+
+  it("skips skinned meshes without skin attributes", () => {
+    const geom = new THREE.BufferGeometry();
+    geom.setAttribute("position", new THREE.BufferAttribute(new Float32Array(3), 3));
+    const mesh = new THREE.SkinnedMesh(geom, new THREE.MeshBasicMaterial());
+    const root = new THREE.Group();
+    root.add(mesh);
+    expect(computeLowestPointY(root)).toBeNull();
+  });
+});
+
+describe("groundMannequin", () => {
+  it("snaps the lowest point to the floor and is idempotent", () => {
+    const mesh = createMockSkinnedMesh();
+    const root = new THREE.Group();
+    root.add(mesh.skeleton!.bones[0]);
+    root.add(mesh);
+    mesh.skeleton!.bones[1].position.set(0, -0.5, 0);
+
+    groundMannequin(root, -1);
+    expect(computeLowestPointY(root)).toBeCloseTo(-1);
+    expect(root.position.y).toBeCloseTo(-0.5);
+
+    // 再適用しても累積せず同じ結果になる
+    groundMannequin(root, -1);
+    expect(computeLowestPointY(root)).toBeCloseTo(-1);
+    expect(root.position.y).toBeCloseTo(-0.5);
+  });
+
+  it("resets the offset to origin when there is no skinned mesh", () => {
+    const root = new THREE.Group();
+    root.position.y = 5;
+    groundMannequin(root, -1);
+    expect(root.position.y).toBe(0);
   });
 });
