@@ -7,6 +7,7 @@ import {
   computeDirection,
   LIMB_BONE_MAPPINGS,
   computeHipsRotation,
+  distributeSpineRotation,
 } from "./retarget";
 import { heatColor } from "./muscles";
 import type { RawLandmark, ActivationMap } from "./muscles";
@@ -71,13 +72,13 @@ export const applyPoseToSkeleton = (
   const bones = Array.from(boneMap.values());
   const boneNames = bones.map((b) => b.name);
 
-  const applyRotationToBone = (
+  const computeWorldDelta = (
     bone: THREE.Bone | undefined,
     targetDir: THREE.Vector3 | null
-  ) => {
-    if (!bone || !targetDir) return;
+  ): THREE.Quaternion | null => {
+    if (!bone || !targetDir) return null;
     bone.updateMatrixWorld(true);
-    if (bone.children.length === 0) return;
+    if (bone.children.length === 0) return null;
 
     const child = bone.children[0];
     const bonePos = new THREE.Vector3();
@@ -87,10 +88,12 @@ export const applyPoseToSkeleton = (
 
     const d_cur = childPos.sub(bonePos).normalize();
     const d_tgt = targetDir.clone().normalize();
-    if (d_cur.lengthSq() === 0 || d_tgt.lengthSq() === 0) return;
+    if (d_cur.lengthSq() === 0 || d_tgt.lengthSq() === 0) return null;
 
-    const q = new THREE.Quaternion().setFromUnitVectors(d_cur, d_tgt);
+    return new THREE.Quaternion().setFromUnitVectors(d_cur, d_tgt);
+  };
 
+  const applyWorldDeltaToBone = (bone: THREE.Bone, q: THREE.Quaternion) => {
     const parentWorldQ = bone.parent
       ? bone.parent.getWorldQuaternion(new THREE.Quaternion())
       : new THREE.Quaternion();
@@ -98,6 +101,16 @@ export const applyPoseToSkeleton = (
     const localDelta = parentWorldQ.clone().invert().multiply(q).multiply(parentWorldQ);
     bone.quaternion.premultiply(localDelta);
     bone.updateMatrixWorld(true);
+  };
+
+  const applyRotationToBone = (
+    bone: THREE.Bone | undefined,
+    targetDir: THREE.Vector3 | null
+  ) => {
+    const q = computeWorldDelta(bone, targetDir);
+    if (bone && q) {
+      applyWorldDeltaToBone(bone, q);
+    }
   };
 
   const hipsName = resolveBoneName("mixamorig:Hips", boneNames);
@@ -117,7 +130,23 @@ export const applyPoseToSkeleton = (
   if (spineName) {
     const spine = boneMap.get(spineName);
     const spineDir = computeSpineDirection(landmarks);
-    applyRotationToBone(spine, spineDir);
+
+    const spine1Name = resolveBoneName("mixamorig:Spine1", boneNames);
+    const spine2Name = resolveBoneName("mixamorig:Spine2", boneNames);
+    const spine1 = spine1Name ? boneMap.get(spine1Name) : undefined;
+    const spine2 = spine2Name ? boneMap.get(spine2Name) : undefined;
+
+    const q = computeWorldDelta(spine, spineDir);
+    if (spine && q) {
+      if (spine1 && spine2) {
+        const [q0, q1, q2] = distributeSpineRotation(q);
+        applyWorldDeltaToBone(spine, q0);
+        applyWorldDeltaToBone(spine1, q1);
+        applyWorldDeltaToBone(spine2, q2);
+      } else {
+        applyWorldDeltaToBone(spine, q);
+      }
+    }
   }
 
   const neckName = resolveBoneName("mixamorig:Neck", boneNames);
