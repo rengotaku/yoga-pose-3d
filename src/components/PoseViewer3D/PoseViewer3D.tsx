@@ -94,8 +94,14 @@ export const PoseViewer3D: React.FC = () => {
     // Load Mannequin
     setIsLoading(true);
     setLoadError(null);
+    // アンマウント済みマウントのロード結果を破棄するフラグ。これが無いと
+    // StrictMode の二重マウントで旧マウントのロードが後から resolve した場合、
+    // mannequinRef が破棄済み scene のマネキンを指し、ポーズ・カメラフィットが
+    // 画面に映らないマネキンへ適用される（#47 のフレーミング崩れの正体）
+    let disposed = false;
     loadMannequin("models/mannequin.glb")
       .then((mannequin) => {
+        if (disposed) return;
         mannequin.name = "mannequin";
         setupMannequinMaterials(mannequin);
 
@@ -136,6 +142,7 @@ export const PoseViewer3D: React.FC = () => {
     window.addEventListener("resize", handleResize);
 
     return () => {
+      disposed = true;
       window.removeEventListener("resize", handleResize);
       cancelAnimationFrame(animationFrameId);
       mount.removeChild(renderer.domElement);
