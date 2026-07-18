@@ -8,6 +8,7 @@ import {
   angleAt,
   flexion,
   computeActivations,
+  detectSupportLegs,
   aggregateByMuscle,
   heatColor,
   MUSCLE_ORDER,
@@ -34,6 +35,32 @@ const buildStanding = (): RawLandmark[] => {
   lm[LM.RIGHT_ANKLE] = { x: -0.1, y: 0.9, z: 0 };
   lm[LM.LEFT_FOOT_INDEX] = { x: 0.1, y: 0.95, z: -0.15 };
   lm[LM.RIGHT_FOOT_INDEX] = { x: -0.1, y: 0.95, z: -0.15 };
+  return lm;
+};
+
+// 木のポーズ相当: 右脚は buildStanding のまま接地・伸展、左脚を持ち上げて
+// （右脚の内側に沿わせるイメージで）膝から真っ直ぐ前上方へ伸ばした片脚立ち。
+// 左足首・左膝・左足趾は腰から見て一直線（膝は曲げていない）だが、
+// 接地からの浮き上がりと腰中心からの水平距離により支持脚判定は L=0 になる。
+const buildTreePose = (): RawLandmark[] => {
+  const lm = buildStanding();
+  const hipL = lm[LM.LEFT_HIP]; // { x: 0.1, y: 0, z: 0 }
+  const dir = { x: 0.248, y: 0.62, z: -0.744 }; // 単位ベクトル（前方かつ上方）
+  lm[LM.LEFT_KNEE] = {
+    x: hipL.x + 0.45 * dir.x,
+    y: hipL.y + 0.45 * dir.y,
+    z: hipL.z + 0.45 * dir.z,
+  };
+  lm[LM.LEFT_ANKLE] = {
+    x: hipL.x + 0.9 * dir.x,
+    y: hipL.y + 0.9 * dir.y,
+    z: hipL.z + 0.9 * dir.z,
+  };
+  lm[LM.LEFT_FOOT_INDEX] = {
+    x: hipL.x + 1.0 * dir.x,
+    y: hipL.y + 1.0 * dir.y,
+    z: hipL.z + 1.0 * dir.z,
+  };
   return lm;
 };
 
@@ -99,6 +126,34 @@ describe("computeActivations", () => {
       expect(v).toBeGreaterThanOrEqual(0);
       expect(v).toBeLessThanOrEqual(1);
     });
+  });
+
+  it("one-leg stance (tree pose): support leg side quadriceps/calf are higher than the lifted leg side", () => {
+    const act = computeActivations(buildTreePose());
+
+    expect(act["quadriceps:R"]).toBeGreaterThan(act["quadriceps:L"]);
+    expect(act["calf:R"]).toBeGreaterThan(act["calf:L"]);
+  });
+
+  it("two-leg stance: left/right quadriceps and calf are roughly equal", () => {
+    const act = computeActivations(buildStanding());
+
+    expect(act["quadriceps:L"]).toBeCloseTo(act["quadriceps:R"], 5);
+    expect(act["calf:L"]).toBeCloseTo(act["calf:R"], 5);
+  });
+});
+
+describe("detectSupportLegs", () => {
+  it("returns roughly equal load for a symmetric two-leg stance", () => {
+    const support = detectSupportLegs(buildStanding());
+    expect(support.L).toBeCloseTo(support.R, 5);
+    expect(support.L).toBeGreaterThan(0);
+  });
+
+  it("returns a much lower load for the lifted leg in a one-leg stance", () => {
+    const support = detectSupportLegs(buildTreePose());
+    expect(support.R).toBeGreaterThan(support.L);
+    expect(support.L).toBeCloseTo(0, 5);
   });
 });
 
