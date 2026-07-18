@@ -115,16 +115,28 @@ export const PoseViewer3D: React.FC = () => {
         mannequinRef.current = mannequin;
 
         // 画像未アップロード時の初期表示でもマネキン全体が枠に収まるよう、
-        // ロード直後にカメラをマネキンの bbox に合わせる（脚だけ映る問題の解消）
+        // ロード直後にカメラをマネキンの bbox に合わせる（脚だけ映る問題の解消）。
+        // ボーン基準の bbox だと頭部メッシュ分を含まず視覚中心が上にずれるので、
+        // SkinnedMesh の bind-pose geometry bbox を使って視覚的な中心を取る。
+        // geometry 属性が未整備の環境（テストのモックローダー等）では
+        // setFromObject が投げるため fallback として skeleton bbox を使う。
         mannequin.updateMatrixWorld(true);
-        let initialSkeleton: THREE.Skeleton | undefined;
-        mannequin.traverse((child) => {
-          if (!initialSkeleton && child instanceof THREE.SkinnedMesh && child.skeleton) {
-            initialSkeleton = child.skeleton;
+        if (cameraRef.current && controlsRef.current) {
+          let box: THREE.Box3;
+          try {
+            box = new THREE.Box3().setFromObject(mannequin);
+          } catch {
+            box = new THREE.Box3();
           }
-        });
-        if (initialSkeleton && cameraRef.current && controlsRef.current) {
-          const box = computeSkeletonBoundingBox(initialSkeleton);
+          if (box.isEmpty()) {
+            let skeleton: THREE.Skeleton | undefined;
+            mannequin.traverse((child) => {
+              if (!skeleton && child instanceof THREE.SkinnedMesh && child.skeleton) {
+                skeleton = child.skeleton;
+              }
+            });
+            if (skeleton) box = computeSkeletonBoundingBox(skeleton);
+          }
           if (!box.isEmpty()) {
             const { position, target } = calculateCameraFit(
               box,
