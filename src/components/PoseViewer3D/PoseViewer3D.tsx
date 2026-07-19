@@ -3,6 +3,13 @@ import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { usePoseStore } from "../../store/usePoseStore";
 import { computeActivations, aggregateByMuscle, VISIBILITY_GATE } from "./muscles";
+import type { RawLandmark } from "./muscles";
+import {
+  buildBodyCapsules,
+  checkGoldenRom,
+  compareLandmarkPoses,
+  detectSelfPenetrations,
+} from "./poseValidity";
 import { fuseLandmarks } from "./fusion";
 import { clampHingeJoints } from "./jointLimits";
 import { MuscleLegend, type MuscleActivation } from "./MuscleLegend";
@@ -270,6 +277,21 @@ export const PoseViewer3D: React.FC = () => {
               return { unresolved };
             },
             exportRotations: () => exportWorldRotations(mannequin),
+            checkGolden: (golden: GoldenPose) => {
+              // ゴールデン品質の定量指標（#84）: ROM 違反 + 自己めり込み。
+              // 呼び出し後はゴールデンが表示されたままになる
+              const unresolved = applyGoldenRotations(
+                mannequin,
+                initialQuaternionsRef.current,
+                golden
+              );
+              groundMannequin(mannequin, FLOOR_Y);
+              const rom = checkGoldenRom(golden);
+              const penetrations = detectSelfPenetrations(buildBodyCapsules(mannequin));
+              return { rom, penetrations, unresolved };
+            },
+            compareLandmarks: (a: RawLandmark[], b: RawLandmark[]) =>
+              compareLandmarkPoses(a, b),
             scoreGolden: (golden: GoldenPose) => {
               // 現在のポーズ（パイプライン出力）を先に採取してからゴールデンを
               // 適用する。呼び出し後はゴールデンが表示されたままになる
