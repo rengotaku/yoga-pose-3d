@@ -2,7 +2,7 @@ import { useEffect } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter, Routes, Route, useNavigate, useLocation } from "react-router-dom";
 import { Layout } from "@/components";
-import { HomePage, UsersPage, LoginPage, NotFoundPage } from "@/pages";
+import { HomePage, UsersPage, LoginPage, NotFoundPage, GoldenViewerPage } from "@/pages";
 import { UNAUTHORIZED_EVENT } from "@/api";
 
 const queryClient = new QueryClient({
@@ -39,6 +39,8 @@ function App() {
       <BrowserRouter>
         <UnauthorizedRedirect />
         <Routes>
+          {/* ゴールデンポーズの確認用ビューア（#78）。Layout 外のフルスクリーン */}
+          <Route path="/golden" element={<GoldenViewerPage />} />
           <Route path="/" element={<Layout />}>
             <Route index element={<HomePage />} />
             <Route path="users" element={<UsersPage />} />
