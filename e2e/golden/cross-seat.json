@@ -1,0 +1,51 @@
+{
+  "pose": "cross-seat",
+  "description": "安楽座（あぐら）。両手を胸の前で交差、顔は上向き",
+  "rotations": {
+    "LeftUpLeg": [
+      -10,
+      -40,
+      90
+    ],
+    "RightUpLeg": [
+      -10,
+      40,
+      -90
+    ],
+    "LeftLeg": [
+      120,
+      0,
+      0
+    ],
+    "RightLeg": [
+      110,
+      -15,
+      0
+    ],
+    "LeftArm": [
+      60,
+      0,
+      -30
+    ],
+    "RightArm": [
+      60,
+      0,
+      30
+    ],
+    "LeftForeArm": [
+      120,
+      0,
+      0
+    ],
+    "RightForeArm": [
+      120,
+      0,
+      0
+    ],
+    "Head": [
+      -50,
+      0,
+      0
+    ]
+  }
+}
