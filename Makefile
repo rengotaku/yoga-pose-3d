@@ -77,6 +77,14 @@ test-cov:
 verify-poses:
 	node e2e/pose-verify.mjs
 
+## golden-render: ゴールデンポーズを直接適用したレンダーを e2e/golden/renders/ に生成（要: make run 起動済み。POSE=<id> で単一）
+golden-render:
+	node e2e/golden-render.mjs
+
+## pose-score: 実写真のパイプライン出力とゴールデンの角度差からスコアを算出（要: make run 起動済み + e2e/golden/sources.local.json）
+pose-score:
+	node e2e/pose-score.mjs
+
 ## check: Run lint + test
 check: lint test
 

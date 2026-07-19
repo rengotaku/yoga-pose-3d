@@ -1,0 +1,8 @@
+{
+  "pose": "_sample",
+  "description": "ハーネス動作確認用サンプル（左腕上げ・右膝曲げ）。実ポーズのゴールデンではない",
+  "rotations": {
+    "LeftArm": [0, 0, 60],
+    "RightLeg": [60, 0, 0]
+  }
+}

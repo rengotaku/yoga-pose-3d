@@ -18,6 +18,12 @@ import {
 } from "./skinnedMannequin";
 import { applyContactIK } from "./ik";
 import { applyTorsoPushOut } from "./collision";
+import {
+  applyGoldenRotations,
+  exportWorldRotations,
+  scorePose,
+  type GoldenPose,
+} from "./golden";
 
 /** 床グリッドの Y 位置。マネキンの接地面もここに合わせる（#36） */
 const FLOOR_Y = -1;
@@ -225,6 +231,67 @@ export const PoseViewer3D: React.FC = () => {
 
         setMannequinModel(mannequin);
         setIsLoading(false);
+
+        // ゴールデン指標ハーネス（#72）: dev 専用の window フック。
+        // e2e/golden-render.mjs（手付けポーズのレンダー）と
+        // e2e/pose-score.mjs（パイプライン出力 vs ゴールデンのスコア算出）が使う。
+        if (import.meta.env.DEV) {
+          const fitCameraToSkeleton = () => {
+            let skeleton: THREE.Skeleton | undefined;
+            mannequin.traverse((child) => {
+              if (!skeleton && child instanceof THREE.SkinnedMesh && child.skeleton) {
+                skeleton = child.skeleton;
+              }
+            });
+            if (!skeleton || !cameraRef.current || !controlsRef.current) return;
+            const box = computeSkeletonBoundingBox(skeleton);
+            if (box.isEmpty()) return;
+            const { position, target } = calculateCameraFit(
+              box,
+              cameraRef.current.fov,
+              undefined,
+              cameraRef.current.aspect
+            );
+            cameraRef.current.position.copy(position);
+            controlsRef.current.target.copy(target);
+            controlsRef.current.update();
+          };
+          (window as unknown as Record<string, unknown>).__poseDebug = {
+            applyGolden: (golden: GoldenPose) => {
+              const unresolved = applyGoldenRotations(
+                mannequin,
+                initialQuaternionsRef.current,
+                golden
+              );
+              groundMannequin(mannequin, FLOOR_Y);
+              fitCameraToSkeleton();
+              return { unresolved };
+            },
+            exportRotations: () => exportWorldRotations(mannequin),
+            scoreGolden: (golden: GoldenPose) => {
+              // 現在のポーズ（パイプライン出力）を先に採取してからゴールデンを
+              // 適用する。呼び出し後はゴールデンが表示されたままになる
+              const actual = exportWorldRotations(mannequin);
+              applyGoldenRotations(mannequin, initialQuaternionsRef.current, golden);
+              groundMannequin(mannequin, FLOOR_Y);
+              const goldenQ = exportWorldRotations(mannequin);
+              return scorePose(goldenQ, actual);
+            },
+            setView: (azimuthDeg: number, elevationDeg: number) => {
+              if (!cameraRef.current || !controlsRef.current) return;
+              const target = controlsRef.current.target;
+              const dist = cameraRef.current.position.distanceTo(target);
+              const az = THREE.MathUtils.degToRad(azimuthDeg);
+              const el = THREE.MathUtils.degToRad(elevationDeg);
+              cameraRef.current.position.set(
+                target.x + dist * Math.sin(az) * Math.cos(el),
+                target.y + dist * Math.sin(el),
+                target.z + dist * Math.cos(az) * Math.cos(el)
+              );
+              controlsRef.current.update();
+            },
+          };
+        }
       })
       .catch((err) => {
         console.error("Failed to load mannequin:", err);
@@ -269,6 +336,9 @@ export const PoseViewer3D: React.FC = () => {
       cameraRef.current = null;
       controlsRef.current = null;
       mannequinRef.current = null;
+      if (import.meta.env.DEV) {
+        delete (window as unknown as Record<string, unknown>).__poseDebug;
+      }
     };
   }, []);
 
