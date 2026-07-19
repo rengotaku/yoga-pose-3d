@@ -45,21 +45,21 @@
     "LeftHand": [
       0,
       0,
-      80
+      40
     ],
     "RightHand": [
       0,
       0,
-      -80
+      -40
     ],
     "LeftForeArm": [
       0,
-      -60,
+      -90,
       0
     ],
     "RightForeArm": [
       0,
-      60,
+      90,
       0
     ]
   }
