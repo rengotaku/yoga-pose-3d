@@ -131,7 +131,8 @@ export const groundMannequin = (root: THREE.Object3D, floorY: number): void => {
 
 export const applyPoseToSkeleton = (
   root: THREE.Object3D,
-  landmarks: RawLandmark[]
+  landmarks: RawLandmark[],
+  minDrive: number = VISIBILITY_GATE.minDrive
 ): void => {
   const boneMap = new Map<string, THREE.Bone>();
   root.traverse((child) => {
@@ -144,9 +145,10 @@ export const applyPoseToSkeleton = (
   const boneNames = bones.map((b) => b.name);
 
   // 低 visibility の landmark の world 座標はハルシネーションのことが多いため、
-  // その landmark に依存するボーンは駆動せずバインドポーズを維持する（#53）
+  // その landmark に依存するボーンは駆動せずバインドポーズを維持する（#53）。
+  // 2D/world 融合成立時は minDriveFused（=0）が渡され、ゲートが実質無効になる（#61）
   const drivable = (...indices: number[]): boolean =>
-    indices.every((i) => isVisible(landmarks[i], VISIBILITY_GATE.minDrive));
+    indices.every((i) => isVisible(landmarks[i], minDrive));
 
   const computeWorldDelta = (
     bone: THREE.Bone | undefined,

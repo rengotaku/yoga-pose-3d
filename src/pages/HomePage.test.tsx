@@ -58,7 +58,8 @@ describe("HomePage", () => {
           .getState()
           .setPoseResult(
             [{ x: 0, y: 0, z: 0, visibility: 1 }],
-            [{ x: 0, y: 0, z: 0, visibility: 1 }]
+            [{ x: 0, y: 0, z: 0, visibility: 1 }],
+            { width: 100, height: 100 }
           );
       });
 

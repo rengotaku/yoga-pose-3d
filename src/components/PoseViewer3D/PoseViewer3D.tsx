@@ -2,7 +2,8 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { usePoseStore } from "../../store/usePoseStore";
-import { computeActivations, aggregateByMuscle } from "./muscles";
+import { computeActivations, aggregateByMuscle, VISIBILITY_GATE } from "./muscles";
+import { fuseLandmarks } from "./fusion";
 import { MuscleLegend, type MuscleActivation } from "./MuscleLegend";
 import { calculateCameraFit } from "./cameraFit";
 import {
@@ -22,7 +23,9 @@ const FLOOR_Y = -1;
 
 export const PoseViewer3D: React.FC = () => {
   const mountRef = useRef<HTMLDivElement>(null);
+  const landmarks = usePoseStore((s) => s.landmarks);
   const worldLandmarks = usePoseStore((s) => s.worldLandmarks);
+  const imageSize = usePoseStore((s) => s.imageSize);
   const sceneRef = useRef<THREE.Scene | null>(null);
   const cameraRef = useRef<THREE.PerspectiveCamera | null>(null);
   const controlsRef = useRef<OrbitControls | null>(null);
@@ -39,12 +42,38 @@ export const PoseViewer3D: React.FC = () => {
     y: number;
   } | null>(null);
 
+  // #61: world landmarks はオクルージョンで x,y が劣化するため、2D landmarks の
+  // x,y を similarity 変換で world 座標系へ写像した値に差し替える（z は world）。
+  // imageSize が無い（未取得・旧データ）場合は world をそのまま使う。
+  // fuseLandmarks はフォールバック時に world と同一参照を返すため、
+  // 参照比較で融合成立（fusionApplied）を判定できる。
+  const { fusedLandmarks, fusionApplied } = useMemo(() => {
+    if (
+      !worldLandmarks ||
+      worldLandmarks.length === 0 ||
+      !landmarks ||
+      !imageSize ||
+      !Number.isFinite(imageSize.width) ||
+      !Number.isFinite(imageSize.height) ||
+      imageSize.width <= 0 ||
+      imageSize.height <= 0
+    ) {
+      return { fusedLandmarks: worldLandmarks, fusionApplied: false };
+    }
+    const fused = fuseLandmarks(
+      landmarks,
+      worldLandmarks,
+      imageSize.width / imageSize.height
+    );
+    return { fusedLandmarks: fused, fusionApplied: fused !== worldLandmarks };
+  }, [landmarks, worldLandmarks, imageSize]);
+
   const muscles: MuscleActivation[] = useMemo(
     () =>
-      worldLandmarks && worldLandmarks.length > 0
-        ? aggregateByMuscle(computeActivations(worldLandmarks))
+      fusedLandmarks && fusedLandmarks.length > 0
+        ? aggregateByMuscle(computeActivations(fusedLandmarks))
         : [],
-    [worldLandmarks]
+    [fusedLandmarks]
   );
 
   useEffect(() => {
@@ -202,7 +231,7 @@ export const PoseViewer3D: React.FC = () => {
   // Update pose and colors when landmarks or selectedMuscle change
   useEffect(() => {
     const mannequin = mannequinRef.current;
-    if (!mannequin || !worldLandmarks || worldLandmarks.length === 0) return;
+    if (!mannequin || !fusedLandmarks || fusedLandmarks.length === 0) return;
 
     // 1. Reset to initial pose
     mannequin.traverse((child) => {
@@ -213,7 +242,12 @@ export const PoseViewer3D: React.FC = () => {
     });
 
     // 2. Apply new pose
-    applyPoseToSkeleton(mannequin, worldLandmarks);
+    // 融合成立時は駆動ゲートを緩和し、低 visibility の四肢も fused x,y で駆動する（#61）
+    applyPoseToSkeleton(
+      mannequin,
+      fusedLandmarks,
+      fusionApplied ? VISIBILITY_GATE.minDriveFused : undefined
+    );
 
     // Ensure world matrices are updated for bounding box computation
     mannequin.updateMatrixWorld(true);
@@ -222,14 +256,14 @@ export const PoseViewer3D: React.FC = () => {
     groundMannequin(mannequin, FLOOR_Y);
 
     // 2.6 接地肢の末端を 2-bone IK で床へ届かせ、めり込みを最終接地で吸収（#41）
-    applyContactIK(mannequin, worldLandmarks, FLOOR_Y);
+    applyContactIK(mannequin, fusedLandmarks, FLOOR_Y);
 
     // 2.7 前腕・手の胴体めり込みを push-out で解消（#44）
-    applyTorsoPushOut(mannequin, worldLandmarks);
+    applyTorsoPushOut(mannequin, fusedLandmarks);
     groundMannequin(mannequin, FLOOR_Y);
 
     // 3. Apply colors
-    const acts = computeActivations(worldLandmarks);
+    const acts = computeActivations(fusedLandmarks);
     let skeleton: THREE.Skeleton | undefined;
 
     mannequin.traverse((child) => {
@@ -257,7 +291,7 @@ export const PoseViewer3D: React.FC = () => {
         controlsRef.current.update();
       }
     }
-  }, [worldLandmarks, selectedMuscle, mannequinModel]);
+  }, [fusedLandmarks, fusionApplied, selectedMuscle, mannequinModel]);
 
   // Raycaster for hover
   useEffect(() => {

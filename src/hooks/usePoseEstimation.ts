@@ -70,7 +70,10 @@ export const usePoseEstimation = () => {
         if (currentToken !== requestTokenRef.current) return;
 
         if (result.landmarks.length > 0 && result.worldLandmarks.length > 0) {
-          setPoseResult(result.landmarks[0], result.worldLandmarks[0]);
+          setPoseResult(result.landmarks[0], result.worldLandmarks[0], {
+            width: imageElement.naturalWidth,
+            height: imageElement.naturalHeight,
+          });
         } else {
           setError("人物が検出されませんでした。");
         }
