@@ -1,0 +1,56 @@
+{
+  "pose": "tabletop",
+  "description": "四つ這い（テーブルトップ）。手と膝で支持、背中フラット、腿と腕は鉛直",
+  "rotations": {
+    "Hips": [
+      90,
+      0,
+      0
+    ],
+    "LeftUpLeg": [
+      -90,
+      0,
+      0
+    ],
+    "RightUpLeg": [
+      -90,
+      0,
+      0
+    ],
+    "LeftLeg": [
+      90,
+      0,
+      0
+    ],
+    "RightLeg": [
+      90,
+      0,
+      0
+    ],
+    "LeftArm": [
+      90,
+      0,
+      0
+    ],
+    "RightArm": [
+      90,
+      0,
+      0
+    ],
+    "Head": [
+      -45,
+      0,
+      0
+    ],
+    "LeftHand": [
+      0,
+      0,
+      80
+    ],
+    "RightHand": [
+      0,
+      0,
+      -80
+    ]
+  }
+}
