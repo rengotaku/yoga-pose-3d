@@ -12,6 +12,7 @@ vi.mock("three", async (importOriginal) => {
       render = vi.fn();
       dispose = vi.fn();
       domElement = document.createElement("canvas");
+      shadowMap = { enabled: false, type: 0 };
     },
   };
 });
@@ -306,5 +307,10 @@ describe("PoseViewer3D UI & Logic integration", () => {
       expect(poseSpy).toHaveBeenCalled();
       expect(colorSpy).toHaveBeenCalled();
     });
+
+    // 接触影のためスキンメッシュに castShadow が付与される（#69）。
+    // frustumCulled はスキン変形時のシャドウ欠け防止のため無効化される。
+    expect(mesh.castShadow).toBe(true);
+    expect(mesh.frustumCulled).toBe(false);
   });
 });

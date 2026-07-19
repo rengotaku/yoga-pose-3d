@@ -112,6 +112,9 @@ export const PoseViewer3D: React.FC = () => {
     const renderer = new THREE.WebGLRenderer({ antialias: true });
     renderer.setSize(width, height);
     renderer.setPixelRatio(window.devicePixelRatio);
+    // 接触影が無いとマネキンが床から浮いて見えるため影を有効化する（#69）
+    renderer.shadowMap.enabled = true;
+    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     mount.appendChild(renderer.domElement);
 
     // Controls
@@ -127,6 +130,15 @@ export const PoseViewer3D: React.FC = () => {
 
     const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
     directionalLight.position.set(2, 5, 3);
+    directionalLight.castShadow = true;
+    directionalLight.shadow.mapSize.set(2048, 2048);
+    // マネキン（原点周辺 ±1.5 程度）と足元の影が収まる範囲に絞って解像度を稼ぐ
+    directionalLight.shadow.camera.left = -4;
+    directionalLight.shadow.camera.right = 4;
+    directionalLight.shadow.camera.top = 4;
+    directionalLight.shadow.camera.bottom = -4;
+    directionalLight.shadow.camera.near = 0.5;
+    directionalLight.shadow.camera.far = 20;
     scene.add(directionalLight);
 
     // Grid Floor
@@ -135,6 +147,16 @@ export const PoseViewer3D: React.FC = () => {
     gridHelper.material.transparent = true;
     gridHelper.position.y = FLOOR_Y;
     scene.add(gridHelper);
+
+    // 影だけを受ける床面（#69）。グリッド線との z-fight を避けるため僅かに下げる
+    const shadowPlane = new THREE.Mesh(
+      new THREE.PlaneGeometry(10, 10),
+      new THREE.ShadowMaterial({ opacity: 0.3 })
+    );
+    shadowPlane.rotation.x = -Math.PI / 2;
+    shadowPlane.position.y = FLOOR_Y - 0.001;
+    shadowPlane.receiveShadow = true;
+    scene.add(shadowPlane);
 
     // Load Mannequin
     setIsLoading(true);
@@ -153,6 +175,12 @@ export const PoseViewer3D: React.FC = () => {
         mannequin.traverse((child) => {
           if ((child as THREE.Bone).isBone) {
             initialQuaternionsRef.current.set(child.name, child.quaternion.clone());
+          }
+          if (child instanceof THREE.SkinnedMesh) {
+            // 床の接触影を落とす（#69）。スキン変形はバインドポーズの bounds を
+            // 越えるため、シャドウカメラ/視錐台カリングでの影欠けを防ぐ
+            child.castShadow = true;
+            child.frustumCulled = false;
           }
         });
 
