@@ -4,6 +4,7 @@ import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { usePoseStore } from "../../store/usePoseStore";
 import { computeActivations, aggregateByMuscle, VISIBILITY_GATE } from "./muscles";
 import { fuseLandmarks } from "./fusion";
+import { clampHingeJoints } from "./jointLimits";
 import { MuscleLegend, type MuscleActivation } from "./MuscleLegend";
 import { calculateCameraFit } from "./cameraFit";
 import {
@@ -68,12 +69,27 @@ export const PoseViewer3D: React.FC = () => {
     return { fusedLandmarks: fused, fusionApplied: fused !== worldLandmarks };
   }, [landmarks, worldLandmarks, imageSize]);
 
+  // #62: retarget/IK/筋推定へ渡す前に、肘・膝をヒンジ関節としてサニタイズする
+  // （逆曲がりミラー・過剰屈曲クランプ）。minDrive は駆動ゲートと揃える
+  // （fusion 成立時は minDriveFused でクランプも緩めないと、駆動されるのに
+  // クランプされない部位が生じる）。
+  const retargetLandmarks = useMemo(
+    () =>
+      fusedLandmarks
+        ? clampHingeJoints(
+            fusedLandmarks,
+            fusionApplied ? VISIBILITY_GATE.minDriveFused : VISIBILITY_GATE.minDrive
+          )
+        : fusedLandmarks,
+    [fusedLandmarks, fusionApplied]
+  );
+
   const muscles: MuscleActivation[] = useMemo(
     () =>
-      fusedLandmarks && fusedLandmarks.length > 0
-        ? aggregateByMuscle(computeActivations(fusedLandmarks))
+      retargetLandmarks && retargetLandmarks.length > 0
+        ? aggregateByMuscle(computeActivations(retargetLandmarks))
         : [],
-    [fusedLandmarks]
+    [retargetLandmarks]
   );
 
   useEffect(() => {
@@ -231,7 +247,7 @@ export const PoseViewer3D: React.FC = () => {
   // Update pose and colors when landmarks or selectedMuscle change
   useEffect(() => {
     const mannequin = mannequinRef.current;
-    if (!mannequin || !fusedLandmarks || fusedLandmarks.length === 0) return;
+    if (!mannequin || !retargetLandmarks || retargetLandmarks.length === 0) return;
 
     // 1. Reset to initial pose
     mannequin.traverse((child) => {
@@ -245,7 +261,7 @@ export const PoseViewer3D: React.FC = () => {
     // 融合成立時は駆動ゲートを緩和し、低 visibility の四肢も fused x,y で駆動する（#61）
     applyPoseToSkeleton(
       mannequin,
-      fusedLandmarks,
+      retargetLandmarks,
       fusionApplied ? VISIBILITY_GATE.minDriveFused : undefined
     );
 
@@ -256,14 +272,14 @@ export const PoseViewer3D: React.FC = () => {
     groundMannequin(mannequin, FLOOR_Y);
 
     // 2.6 接地肢の末端を 2-bone IK で床へ届かせ、めり込みを最終接地で吸収（#41）
-    applyContactIK(mannequin, fusedLandmarks, FLOOR_Y);
+    applyContactIK(mannequin, retargetLandmarks, FLOOR_Y);
 
     // 2.7 前腕・手の胴体めり込みを push-out で解消（#44）
-    applyTorsoPushOut(mannequin, fusedLandmarks);
+    applyTorsoPushOut(mannequin, retargetLandmarks);
     groundMannequin(mannequin, FLOOR_Y);
 
     // 3. Apply colors
-    const acts = computeActivations(fusedLandmarks);
+    const acts = computeActivations(retargetLandmarks);
     let skeleton: THREE.Skeleton | undefined;
 
     mannequin.traverse((child) => {
@@ -291,7 +307,7 @@ export const PoseViewer3D: React.FC = () => {
         controlsRef.current.update();
       }
     }
-  }, [fusedLandmarks, fusionApplied, selectedMuscle, mannequinModel]);
+  }, [retargetLandmarks, fusionApplied, selectedMuscle, mannequinModel]);
 
   // Raycaster for hover
   useEffect(() => {
