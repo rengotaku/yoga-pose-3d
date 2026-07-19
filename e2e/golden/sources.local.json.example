@@ -1,0 +1,5 @@
+{
+  "kneel-sidebend": "/absolute/path/to/kneel-sidebend-photo.png",
+  "cross-seat": "/absolute/path/to/cross-seat-photo.png",
+  "tabletop": "/absolute/path/to/tabletop-photo.png"
+}

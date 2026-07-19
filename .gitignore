@@ -25,3 +25,6 @@ coverage
 *.sw?
 
 e2e/output/
+
+# ゴールデン指標の実写真ローカルパス設定（実写真はコミットしない, #72）
+e2e/golden/sources.local.json
