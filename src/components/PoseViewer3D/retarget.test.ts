@@ -14,6 +14,8 @@ import {
   computeBackbendAmount,
   computeBackbendArchRotations,
   BACKBEND_ARCH,
+  computeHeadRotation,
+  computeHandDirection,
 } from "./retarget";
 
 const buildMockLandmarks = (): RawLandmark[] => {
@@ -269,5 +271,71 @@ describe("distributeSpineRotation", () => {
 
     const compositeRotation = new THREE.Quaternion().copy(q0).multiply(q1).multiply(q2);
     expect(compositeRotation.angleTo(targetRotation)).toBeCloseTo(0);
+  });
+});
+
+describe("computeHeadRotation", () => {
+  const baseFaceLandmarks = (): RawLandmark[] => {
+    const lm: RawLandmark[] = Array.from({ length: 33 }, () => ({ x: 0, y: 0, z: 0 }));
+    // 正面向き: 耳が左右、鼻は耳中点の前（MediaPipe z 負 = 前）
+    lm[LM.LEFT_EAR] = { x: 0.1, y: 0, z: 0 };
+    lm[LM.RIGHT_EAR] = { x: -0.1, y: 0, z: 0 };
+    lm[LM.NOSE] = { x: 0, y: 0, z: -0.1 };
+    return lm;
+  };
+
+  it("returns identity-ish rotation for a forward-facing head", () => {
+    const q = computeHeadRotation(baseFaceLandmarks());
+    expect(q).not.toBeNull();
+    const forward = new THREE.Vector3(0, 0, 1).applyQuaternion(q!);
+    expect(forward.z).toBeGreaterThan(0.99);
+  });
+
+  it("tilts face-forward upward for a looking-up head", () => {
+    const lm = baseFaceLandmarks();
+    // 見上げ: 鼻が耳中点より上（MediaPipe y 下向き正なので y 負）かつ前
+    lm[LM.NOSE] = { x: 0, y: -0.08, z: -0.08 };
+    const q = computeHeadRotation(lm);
+    expect(q).not.toBeNull();
+    const forward = new THREE.Vector3(0, 0, 1).applyQuaternion(q!);
+    expect(forward.y).toBeGreaterThan(0.5);
+    expect(forward.z).toBeGreaterThan(0);
+  });
+
+  it("points face-forward backward for a rear-facing head", () => {
+    const lm = baseFaceLandmarks();
+    // 後ろ向き: 鼻が耳中点の奥（MediaPipe z 正 = カメラ反対）。耳の左右も反転
+    lm[LM.LEFT_EAR] = { x: -0.1, y: 0, z: 0 };
+    lm[LM.RIGHT_EAR] = { x: 0.1, y: 0, z: 0 };
+    lm[LM.NOSE] = { x: 0, y: 0, z: 0.1 };
+    const q = computeHeadRotation(lm);
+    expect(q).not.toBeNull();
+    const forward = new THREE.Vector3(0, 0, 1).applyQuaternion(q!);
+    expect(forward.z).toBeLessThan(-0.99);
+  });
+
+  it("returns null when face landmarks are degenerate", () => {
+    const lm = baseFaceLandmarks();
+    lm[LM.NOSE] = { x: 0, y: 0, z: 0 }; // 耳中点と一致 → ゼロ長
+    expect(computeHeadRotation(lm)).toBeNull();
+  });
+});
+
+describe("computeHandDirection", () => {
+  it("points from wrist to knuckle midpoint (three coords)", () => {
+    const lm: RawLandmark[] = Array.from({ length: 33 }, () => ({ x: 0, y: 0, z: 0 }));
+    lm[LM.LEFT_WRIST] = { x: 0, y: 0, z: 0 };
+    lm[LM.LEFT_INDEX] = { x: 0.1, y: -0.1, z: 0 };
+    lm[LM.LEFT_PINKY] = { x: 0.1, y: -0.1, z: 0 };
+    const dir = computeHandDirection(lm, "left");
+    expect(dir).not.toBeNull();
+    // toVec で y 反転: MediaPipe y=-0.1（上）→ three y=+0.1
+    expect(dir!.x).toBeCloseTo(Math.SQRT1_2, 3);
+    expect(dir!.y).toBeCloseTo(Math.SQRT1_2, 3);
+  });
+
+  it("returns null when knuckles coincide with wrist", () => {
+    const lm: RawLandmark[] = Array.from({ length: 33 }, () => ({ x: 0, y: 0, z: 0 }));
+    expect(computeHandDirection(lm, "right")).toBeNull();
   });
 });
