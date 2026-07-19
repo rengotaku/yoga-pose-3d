@@ -84,7 +84,7 @@ describe("PoseCanvas", () => {
   it("draws landmarks on canvas when landmarks are available", () => {
     usePoseStore.getState().setImageSrc("test.jpg");
     const mockLandmarks = [{ x: 0, y: 0, z: 0, visibility: 1 }];
-    usePoseStore.getState().setPoseResult(mockLandmarks, []);
+    usePoseStore.getState().setPoseResult(mockLandmarks, [], { width: 100, height: 100 });
 
     render(<PoseCanvas />);
 
@@ -127,7 +127,7 @@ describe("PoseCanvas", () => {
         { x: 0.1, y: 0.1, z: 0, visibility: 0.1 },
         { x: 0.2, y: 0.2, z: 0, visibility: 0.9 },
       ];
-      usePoseStore.getState().setPoseResult(lms, []);
+      usePoseStore.getState().setPoseResult(lms, [], { width: 100, height: 100 });
 
       render(<PoseCanvas />);
 

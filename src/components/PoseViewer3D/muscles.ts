@@ -43,11 +43,17 @@ export type RawLandmark = { x: number; y: number; z: number; visibility?: number
  * 破綻する（実測: 後ろ向き膝立ち画像で脚の visibility 0.06〜0.4）。
  *
  * - minDrive: ボーン駆動に使う下限。未満はバインドポーズ維持
+ * - minDriveFused: 2D/world 融合（#61）が成立した場合のボーン駆動下限。
+ *   fused の x,y は global similarity fit + 2D 検出由来でオクルージョンに頑健
+ *   なため、ゲートを外して低 visibility の四肢も駆動する（0 = landmark が
+ *   存在すれば駆動）。深度ノイズによる解剖学的破綻はヒンジ関節リミット（#62）
+ *   が受ける
  * - minContact: 接地 IK の接地候補に使う下限。IK は全身を動かすため高いバー
  * - minDraw: 2D 棒人間描画の下限。未満の点・結線は描かない
  */
 export const VISIBILITY_GATE = {
   minDrive: 0.3,
+  minDriveFused: 0,
   minContact: 0.5,
   minDraw: 0.3,
 } as const;
