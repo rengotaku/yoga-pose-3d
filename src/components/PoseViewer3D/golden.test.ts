@@ -103,17 +103,42 @@ describe("scorePose", () => {
     expect(score.missing).toEqual([]);
   });
 
-  it("penalizes by weight share when one joint is 90° off", () => {
+  it("penalizes by weight share when one joint is 90° pitched off", () => {
+    // ヨーは正規化されるため、単関節ズレのテストはピッチ（X）で行う
     const golden = allIdentity();
     const actual = allIdentity();
-    const rot90 = new THREE.Quaternion().setFromEuler(new THREE.Euler(0, Math.PI / 2, 0));
-    actual.Hips = [rot90.x, rot90.y, rot90.z, rot90.w];
+    const pitch90 = new THREE.Quaternion().setFromEuler(
+      new THREE.Euler(Math.PI / 2, 0, 0)
+    );
+    actual.Hips = [pitch90.x, pitch90.y, pitch90.z, pitch90.w];
 
     const score = scorePose(golden, actual);
     const totalWeight = Object.values(SCORE_BONE_WEIGHTS).reduce((a, b) => a + b, 0);
     const expected = ((totalWeight - SCORE_BONE_WEIGHTS.Hips) / totalWeight) * 100;
     expect(score.total).toBeCloseTo(expected, 4);
     expect(score.joints.Hips.score).toBeCloseTo(0, 6);
+  });
+
+  it("is invariant to a global yaw difference (#76)", () => {
+    const golden = allIdentity();
+    const actual = allIdentity();
+    const yaw = new THREE.Quaternion().setFromEuler(new THREE.Euler(0, Math.PI / 2, 0));
+    for (const k of Object.keys(actual)) {
+      actual[k] = [yaw.x, yaw.y, yaw.z, yaw.w];
+    }
+    const score = scorePose(golden, actual);
+    expect(score.total).toBeCloseTo(100, 4);
+  });
+
+  it("still penalizes a global pitch difference (#76)", () => {
+    const golden = allIdentity();
+    const actual = allIdentity();
+    const pitch = new THREE.Quaternion().setFromEuler(new THREE.Euler(Math.PI / 2, 0, 0));
+    for (const k of Object.keys(actual)) {
+      actual[k] = [pitch.x, pitch.y, pitch.z, pitch.w];
+    }
+    const score = scorePose(golden, actual);
+    expect(score.total).toBeCloseTo(0, 4);
   });
 
   it("lists joints missing from either side and excludes them from the average", () => {

@@ -139,8 +139,31 @@ export const quaternionAngleDeg = (a: QuatTuple, b: QuatTuple): number => {
 };
 
 /**
+ * golden→actual の Hips 相対回転から、world Y 軸まわりのツイスト成分（ヨー）
+ * を swing-twist 分解で抽出する（#76）。写真の人物の向きとゴールデンの向き
+ * （+Z 正面）の差はポーズ誤差ではないため、採点前に actual 側から取り除く。
+ * ピッチ/ロールのグローバル差は重力軸に対する実誤差なので正規化しない。
+ */
+export const computeYawAlignment = (
+  golden: Record<string, QuatTuple>,
+  actual: Record<string, QuatTuple>
+): THREE.Quaternion => {
+  const g = golden.Hips;
+  const a = actual.Hips;
+  if (!g || !a) return new THREE.Quaternion();
+  const qg = new THREE.Quaternion(g[0], g[1], g[2], g[3]).normalize();
+  const qa = new THREE.Quaternion(a[0], a[1], a[2], a[3]).normalize();
+  const rel = qg.multiply(qa.invert());
+  // swing-twist 分解: Y 軸成分だけ残して正規化するとヨー成分になる
+  const twist = new THREE.Quaternion(0, rel.y, 0, rel.w);
+  if (twist.lengthSq() < 1e-12) return new THREE.Quaternion();
+  return twist.normalize();
+};
+
+/**
  * パイプライン出力（actual）とゴールデン（golden）の world 回転からスコアを
- * 算出する。関節スコア = max(0, 1 - 角度差/90°)、総合 = 重み付き平均 × 100。
+ * 算出する。actual は Hips 基準のヨー正規化（#76）を掛けてから比較する。
+ * 関節スコア = max(0, 1 - 角度差/90°)、総合 = 重み付き平均 × 100。
  */
 export const scorePose = (
   golden: Record<string, QuatTuple>,
@@ -150,6 +173,7 @@ export const scorePose = (
   const missing: string[] = [];
   let weightedSum = 0;
   let weightTotal = 0;
+  const yaw = computeYawAlignment(golden, actual);
 
   for (const [stdName, weight] of Object.entries(SCORE_BONE_WEIGHTS)) {
     const g = golden[stdName];
@@ -158,7 +182,10 @@ export const scorePose = (
       missing.push(stdName);
       continue;
     }
-    const angleDeg = quaternionAngleDeg(g, a);
+    const aligned = yaw
+      .clone()
+      .multiply(new THREE.Quaternion(a[0], a[1], a[2], a[3]).normalize());
+    const angleDeg = quaternionAngleDeg(g, [aligned.x, aligned.y, aligned.z, aligned.w]);
     const score = Math.max(0, 1 - angleDeg / ANGLE_FOR_ZERO_SCORE);
     joints[stdName] = { angleDeg, score, weight };
     weightedSum += score * weight;
