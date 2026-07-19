@@ -204,10 +204,30 @@ export const computeHandDirection = (
 };
 
 /**
+ * 骨盤基底の退化判定パラメータ（#55）。
+ *
+ * MediaPipe world の左右股関節距離は、後ろ向き・オクルージョンの強い画像で
+ * 実際（成人でおよそ 0.2m 以上）よりはるかに小さく推定されることがある
+ * （実測: 後ろ向き膝立ち側屈画像で 0.09m、胴体長比 0.19）。距離が潰れると
+ * hip line の向きはノイズ支配になり、骨盤基底が大きくロールして胴体全体が
+ * 破綻する。胴体長（腰中点→肩中点）に対する比で信頼可否を判定する。
+ */
+export const HIPS_BASIS = {
+  minHipTorsoRatio: 0.35,
+} as const;
+
+/**
  * 左右の腰のランドマークとSpineの方向から、Hipsの直交基底クォータニオンを計算する。
  * X軸(右): RIGHT_HIP -> LEFT_HIP
  * Y軸(上): SpineDirection
  * Z軸(前): X と Y の外積
+ *
+ * 股関節距離が胴体長比 minHipTorsoRatio 未満のときは hip line の向きを
+ * 信頼せず、「spine に直交する水平ベクトル」（up × spine）を X 軸に使う
+ * （骨盤ロールの暴走を抑制。#55）。hip line の水平投影ではなく up × spine を
+ * 使うのは、spine chord 自体が水平に近いポーズでは直交化で X が再び鉛直へ
+ * 引き戻されるため。左右の符号は hip line（弱ければ肩線）の水平成分に合わせる。
+ * spine がほぼ鉛直で外積が退化する場合は生の hip line を使う。
  */
 export const computeHipsRotation = (
   landmarks: RawLandmark[]
@@ -218,8 +238,36 @@ export const computeHipsRotation = (
 
   if (!hipL || !hipR || !spineDir) return null;
 
-  const xDir = computeDirection(hipR, hipL);
+  let xDir = computeDirection(hipR, hipL);
   if (!xDir) return null;
+
+  const hipDist = toVec(hipL).distanceTo(toVec(hipR));
+  const hipMid = computeMidpoint(hipL, hipR);
+  const shMid = computeMidpoint(
+    landmarks[LM.LEFT_SHOULDER],
+    landmarks[LM.RIGHT_SHOULDER]
+  );
+  const torsoLen = hipMid && shMid ? hipMid.distanceTo(shMid) : 0;
+  if (torsoLen > 1e-6 && hipDist / torsoLen < HIPS_BASIS.minHipTorsoRatio) {
+    const horizontal = new THREE.Vector3()
+      .crossVectors(new THREE.Vector3(0, 1, 0), spineDir)
+      .normalize();
+    if (horizontal.lengthSq() > 1e-8) {
+      const hipHoriz = new THREE.Vector3(xDir.x, 0, xDir.z);
+      const shoulderDir = computeDirection(
+        landmarks[LM.RIGHT_SHOULDER],
+        landmarks[LM.LEFT_SHOULDER]
+      );
+      const shoulderHoriz = shoulderDir
+        ? new THREE.Vector3(shoulderDir.x, 0, shoulderDir.z)
+        : new THREE.Vector3();
+      const signRef =
+        Math.abs(horizontal.dot(hipHoriz)) >= Math.abs(horizontal.dot(shoulderHoriz))
+          ? hipHoriz
+          : shoulderHoriz;
+      xDir = horizontal.dot(signRef) >= 0 ? horizontal : horizontal.multiplyScalar(-1);
+    }
+  }
 
   // 正確な直交基底を作る
   const zDir = new THREE.Vector3().crossVectors(xDir, spineDir).normalize();
@@ -228,6 +276,48 @@ export const computeHipsRotation = (
   const xAxis = new THREE.Vector3().crossVectors(spineDir, zDir).normalize();
   const m = new THREE.Matrix4().makeBasis(xAxis, spineDir, zDir);
   return new THREE.Quaternion().setFromRotationMatrix(m);
+};
+
+/**
+ * 脊椎ツイストのパラメータ（#55）。ツイストは spine 3 ボーンへ分配するが、
+ * ノイズで首・胸が過回転しないよう合計角に上限を設ける。
+ */
+export const SPINE_TWIST = {
+  maxTwistRad: (60 * Math.PI) / 180,
+} as const;
+
+/**
+ * 体幹の chord（腰中点→肩中点）アラインでは表現されない「肩線の捻れ・傾き」
+ * を、spine 軸まわりのツイスト回転（world delta）として求める（#55）。
+ *
+ * 骨盤基底の X 軸と実測の肩線（右肩→左肩）をそれぞれ spine 軸に直交する
+ * 平面へ射影し、その角度差を spine 軸まわりの回転にする。側屈・捻転で
+ * 肩線が骨盤に対して傾く/回るポーズが胴体に反映される。
+ * 射影が退化する（肩線や骨盤 X が spine とほぼ平行）場合は null。
+ */
+export const computeSpineTwistRotation = (
+  landmarks: RawLandmark[]
+): THREE.Quaternion | null => {
+  const spineDir = computeSpineDirection(landmarks);
+  const hipsQ = computeHipsRotation(landmarks);
+  const shoulderDir = computeDirection(
+    landmarks[LM.RIGHT_SHOULDER],
+    landmarks[LM.LEFT_SHOULDER]
+  );
+  if (!spineDir || !hipsQ || !shoulderDir) return null;
+
+  const pelvisX = new THREE.Vector3(1, 0, 0).applyQuaternion(hipsQ);
+  const projP = pelvisX.clone().projectOnPlane(spineDir);
+  const projS = shoulderDir.clone().projectOnPlane(spineDir);
+  if (projP.lengthSq() < 1e-8 || projS.lengthSq() < 1e-8) return null;
+  projP.normalize();
+  projS.normalize();
+
+  let angle = projP.angleTo(projS);
+  const sign = new THREE.Vector3().crossVectors(projP, projS).dot(spineDir) >= 0 ? 1 : -1;
+  angle = Math.min(angle, SPINE_TWIST.maxTwistRad) * sign;
+  if (Math.abs(angle) < 1e-6) return null;
+  return new THREE.Quaternion().setFromAxisAngle(spineDir, angle);
 };
 
 /**
