@@ -9,6 +9,7 @@ import {
   computeHandDirection,
   LIMB_BONE_MAPPINGS,
   computeHipsRotation,
+  computeSpineTwistRotation,
   distributeSpineRotation,
   computeBackbendArchRotations,
   BONE_ALIASES,
@@ -238,6 +239,22 @@ export const applyPoseToSkeleton = (
         applyWorldDeltaToBone(spine, archQs[0]);
         applyWorldDeltaToBone(spine1, archQs[1]);
         applyWorldDeltaToBone(spine2, archQs[2]);
+      }
+    }
+
+    // 脊椎ツイスト（#55): chord アラインでは肩線の捻れ・傾きが失われるため、
+    // 骨盤 X と実測肩線の角度差を spine 軸まわりの回転として追加分配する
+    if (spine) {
+      const twistQ = computeSpineTwistRotation(landmarks);
+      if (twistQ) {
+        if (spine1 && spine2) {
+          const [t0, t1, t2] = distributeSpineRotation(twistQ);
+          applyWorldDeltaToBone(spine, t0);
+          applyWorldDeltaToBone(spine1, t1);
+          applyWorldDeltaToBone(spine2, t2);
+        } else {
+          applyWorldDeltaToBone(spine, twistQ);
+        }
       }
     }
   }

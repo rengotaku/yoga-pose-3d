@@ -16,6 +16,8 @@ import {
   BACKBEND_ARCH,
   computeHeadRotation,
   computeHandDirection,
+  computeSpineTwistRotation,
+  SPINE_TWIST,
 } from "./retarget";
 
 const buildMockLandmarks = (): RawLandmark[] => {
@@ -337,5 +339,75 @@ describe("computeHandDirection", () => {
   it("returns null when knuckles coincide with wrist", () => {
     const lm: RawLandmark[] = Array.from({ length: 33 }, () => ({ x: 0, y: 0, z: 0 }));
     expect(computeHandDirection(lm, "right")).toBeNull();
+  });
+});
+
+describe("computeHipsRotation degenerate hip fallback (#55)", () => {
+  it("keeps raw hip line when hip distance is healthy", () => {
+    const lm: RawLandmark[] = Array.from({ length: 33 }, () => ({ x: 0, y: 0, z: 0 }));
+    lm[LM.LEFT_HIP] = { x: 0.1, y: 0, z: 0 };
+    lm[LM.RIGHT_HIP] = { x: -0.1, y: 0, z: 0 };
+    lm[LM.LEFT_SHOULDER] = { x: 0.15, y: -0.5, z: 0 };
+    lm[LM.RIGHT_SHOULDER] = { x: -0.15, y: -0.5, z: 0 };
+    const q = computeHipsRotation(lm);
+    expect(q).not.toBeNull();
+    const x = new THREE.Vector3(1, 0, 0).applyQuaternion(q!);
+    expect(x.x).toBeGreaterThan(0.99);
+  });
+
+  it("projects hip line to horizontal when hip distance is degenerate", () => {
+    // 実測値ベース（後ろ向き膝立ち側屈画像）: hip 距離 0.09m・胴体長 0.47m・
+    // hip line がほぼ鉛直 → 従来は骨盤が約 70° ロールしていた
+    const lm: RawLandmark[] = Array.from({ length: 33 }, () => ({ x: 0, y: 0, z: 0 }));
+    lm[LM.LEFT_HIP] = { x: -0.014, y: -0.043, z: -0.001 };
+    lm[LM.RIGHT_HIP] = { x: 0.018, y: 0.043, z: 0.005 };
+    lm[LM.LEFT_SHOULDER] = { x: 0.431, y: -0.31, z: -0.03 };
+    lm[LM.RIGHT_SHOULDER] = { x: 0.439, y: -0.062, z: 0.081 };
+    const q = computeHipsRotation(lm);
+    expect(q).not.toBeNull();
+    const x = new THREE.Vector3(1, 0, 0).applyQuaternion(q!);
+    // 骨盤 X 軸のロール（world Y 成分）が抑制されること
+    // （up × spine 由来の X は水平。従来は約 0.87 = 60° 超のロール）
+    expect(Math.abs(x.y)).toBeLessThan(0.1);
+  });
+});
+
+describe("computeSpineTwistRotation", () => {
+  const baseTorso = (): RawLandmark[] => {
+    const lm: RawLandmark[] = Array.from({ length: 33 }, () => ({ x: 0, y: 0, z: 0 }));
+    lm[LM.LEFT_HIP] = { x: 0.1, y: 0, z: 0 };
+    lm[LM.RIGHT_HIP] = { x: -0.1, y: 0, z: 0 };
+    return lm;
+  };
+
+  it("returns null when shoulders align with pelvis (no twist)", () => {
+    const lm = baseTorso();
+    lm[LM.LEFT_SHOULDER] = { x: 0.15, y: -0.5, z: 0 };
+    lm[LM.RIGHT_SHOULDER] = { x: -0.15, y: -0.5, z: 0 };
+    expect(computeSpineTwistRotation(lm)).toBeNull();
+  });
+
+  it("rotates pelvis X onto the measured shoulder line", () => {
+    // 肩線を水平面内で 45° 回した捻転ポーズ
+    const lm = baseTorso();
+    lm[LM.LEFT_SHOULDER] = { x: 0.106, y: -0.5, z: -0.106 };
+    lm[LM.RIGHT_SHOULDER] = { x: -0.106, y: -0.5, z: 0.106 };
+    const q = computeSpineTwistRotation(lm);
+    expect(q).not.toBeNull();
+    const rotated = new THREE.Vector3(1, 0, 0).applyQuaternion(q!);
+    // three 座標では肩線 R→L = (0.212, 0, -0.212*(-1)) → (0.707, 0, 0.707)
+    expect(rotated.x).toBeCloseTo(Math.SQRT1_2, 1);
+    expect(rotated.z).toBeCloseTo(Math.SQRT1_2, 1);
+  });
+
+  it("clamps twist angle to maxTwistRad", () => {
+    // 肩線 90° 回転 → 上限 60° にクランプ
+    const lm = baseTorso();
+    lm[LM.LEFT_SHOULDER] = { x: 0, y: -0.5, z: -0.15 };
+    lm[LM.RIGHT_SHOULDER] = { x: 0, y: -0.5, z: 0.15 };
+    const q = computeSpineTwistRotation(lm);
+    expect(q).not.toBeNull();
+    const angle = 2 * Math.acos(Math.min(1, Math.abs(q!.w)));
+    expect(angle).toBeCloseTo(SPINE_TWIST.maxTwistRad, 2);
   });
 });
