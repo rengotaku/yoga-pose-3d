@@ -2,6 +2,8 @@ import { describe, it, expect } from "vitest";
 import * as THREE from "three";
 import {
   applyGoldenRotations,
+  diagnosePose,
+  exportBoneChildDirs,
   exportWorldRotations,
   quaternionAngleDeg,
   scorePose,
@@ -148,5 +150,67 @@ describe("scorePose", () => {
     const score = scorePose(golden, actual);
     expect(score.missing).toEqual(["LeftHand"]);
     expect(score.total).toBeCloseTo(100, 6);
+  });
+});
+
+describe("exportBoneChildDirs", () => {
+  it("returns normalized child directions and skips childless bones", () => {
+    const { root, spine01, upperarmL } = buildRig();
+    spine01.position.set(0, 2, 0);
+    upperarmL.position.set(0, 2, 0);
+    root.updateMatrixWorld(true);
+    const dirs = exportBoneChildDirs(root);
+    // Hips(pelvis) の子 = spine_01 (0,2,0) → 正規化 (0,1,0)
+    expect(dirs.Hips).toBeDefined();
+    expect(dirs.Hips[1]).toBeCloseTo(1, 5);
+    // upperarm_l は子を持たないので含まれない
+    expect(dirs.LeftArm).toBeUndefined();
+  });
+});
+
+describe("diagnosePose", () => {
+  const CHILD_DIRS: Record<string, [number, number, number]> = {
+    Spine: [0, 1, 0],
+  };
+
+  it("attributes a rotation about the bone axis to twist", () => {
+    const twist = new THREE.Quaternion().setFromAxisAngle(
+      new THREE.Vector3(0, 1, 0),
+      (40 * Math.PI) / 180
+    );
+    const diag = diagnosePose(
+      { Hips: IDENTITY, Spine: IDENTITY },
+      { Hips: IDENTITY, Spine: [twist.x, twist.y, twist.z, twist.w] },
+      CHILD_DIRS
+    );
+    expect(diag.Spine.angleDeg).toBeCloseTo(40, 1);
+    expect(diag.Spine.swingDeg!).toBeCloseTo(0, 1);
+    expect(diag.Spine.twistDeg!).toBeCloseTo(40, 1);
+  });
+
+  it("attributes a rotation perpendicular to the bone axis to swing", () => {
+    const swing = new THREE.Quaternion().setFromAxisAngle(
+      new THREE.Vector3(1, 0, 0),
+      (30 * Math.PI) / 180
+    );
+    const diag = diagnosePose(
+      { Hips: IDENTITY, Spine: IDENTITY },
+      { Hips: IDENTITY, Spine: [swing.x, swing.y, swing.z, swing.w] },
+      CHILD_DIRS
+    );
+    expect(diag.Spine.angleDeg).toBeCloseTo(30, 1);
+    expect(diag.Spine.swingDeg!).toBeCloseTo(30, 1);
+    expect(diag.Spine.twistDeg!).toBeCloseTo(0, 1);
+  });
+
+  it("reports null swing/twist for bones without a child dir", () => {
+    const diag = diagnosePose(
+      { Hips: IDENTITY, Spine: IDENTITY },
+      { Hips: IDENTITY, Spine: IDENTITY },
+      {}
+    );
+    expect(diag.Spine.angleDeg).toBeCloseTo(0, 5);
+    expect(diag.Spine.swingDeg).toBeNull();
+    expect(diag.Spine.twistDeg).toBeNull();
   });
 });

@@ -18,6 +18,8 @@ import {
   computeHandDirection,
   computeSpineTwistRotation,
   SPINE_TWIST,
+  computeChainHingeAxis,
+  computeTwistCorrection,
 } from "./retarget";
 
 const buildMockLandmarks = (): RawLandmark[] => {
@@ -409,5 +411,70 @@ describe("computeSpineTwistRotation", () => {
     expect(q).not.toBeNull();
     const angle = 2 * Math.acos(Math.min(1, Math.abs(q!.w)));
     expect(angle).toBeCloseTo(SPINE_TWIST.maxTwistRad, 2);
+  });
+});
+
+describe("computeChainHingeAxis", () => {
+  // raw 座標は y 下向き正・toVec で (x, -y, -z) に反転される
+  const hip = { x: 0, y: 0, z: 0 };
+
+  it("returns the rotation axis u×w for a bent chain", () => {
+    // three 空間で u=(0,-1,0)（真下）, w=(0,0,-1)（背面へ折れる）→ 軸 +X
+    const knee = { x: 0, y: 0.5, z: 0 };
+    const ankle = { x: 0, y: 0.5, z: 1 };
+    const axis = computeChainHingeAxis(hip, knee, ankle);
+    expect(axis).not.toBeNull();
+    expect(axis!.x).toBeCloseTo(1, 5);
+    expect(axis!.y).toBeCloseTo(0, 5);
+    expect(axis!.z).toBeCloseTo(0, 5);
+  });
+
+  it("returns null for a nearly straight chain (below minBendRad)", () => {
+    // 曲げ 10° < 25°
+    const knee = { x: 0, y: 0.5, z: 0 };
+    const bend = (10 * Math.PI) / 180;
+    const ankle = { x: Math.sin(bend) * 0.5, y: 0.5 + Math.cos(bend) * 0.5, z: 0 };
+    expect(computeChainHingeAxis(hip, knee, ankle)).toBeNull();
+  });
+
+  it("returns null when a landmark is missing", () => {
+    const knee = { x: 0, y: 0.5, z: 0 };
+    expect(computeChainHingeAxis(hip, knee, undefined)).toBeNull();
+    expect(computeChainHingeAxis(undefined, knee, hip)).toBeNull();
+  });
+});
+
+describe("computeTwistCorrection", () => {
+  it("returns the signed angle from current to target around the axis", () => {
+    const axis = new THREE.Vector3(0, 1, 0);
+    const angle = computeTwistCorrection(
+      axis,
+      new THREE.Vector3(1, 0, 0),
+      new THREE.Vector3(0, 0, 1)
+    );
+    expect(angle).not.toBeNull();
+    // cross(X, Z) = -Y なので軸 +Y に対して負の 90°
+    expect(angle!).toBeCloseTo(-Math.PI / 2, 5);
+  });
+
+  it("returns null when the correction is below the noise floor", () => {
+    const axis = new THREE.Vector3(0, 1, 0);
+    const small = (10 * Math.PI) / 180;
+    const angle = computeTwistCorrection(
+      axis,
+      new THREE.Vector3(1, 0, 0),
+      new THREE.Vector3(Math.cos(small), 0, Math.sin(small))
+    );
+    expect(angle).toBeNull();
+  });
+
+  it("returns null when current is parallel to the axis (projection degenerates)", () => {
+    const axis = new THREE.Vector3(0, 1, 0);
+    const angle = computeTwistCorrection(
+      axis,
+      new THREE.Vector3(0, 1, 0),
+      new THREE.Vector3(1, 0, 0)
+    );
+    expect(angle).toBeNull();
   });
 });

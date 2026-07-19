@@ -130,6 +130,76 @@ describe("applyPoseToSkeleton", () => {
     applyPoseToSkeleton(root, lm);
     expect(arm.quaternion.equals(new THREE.Quaternion())).toBe(false);
   });
+
+  // 四肢ツイスト制御（#82）
+  const createLegChain = () => {
+    const upLeg = new THREE.Bone();
+    upLeg.name = "mixamorig:LeftUpLeg";
+    const leg = new THREE.Bone();
+    leg.name = "mixamorig:LeftLeg";
+    leg.position.set(0, -1, 0);
+    const foot = new THREE.Bone();
+    foot.name = "mixamorig:LeftFoot";
+    foot.position.set(0, -1, 0);
+    upLeg.add(leg);
+    leg.add(foot);
+    const root = new THREE.Group();
+    root.add(upLeg);
+    root.updateMatrixWorld(true);
+    return { root, upLeg, leg };
+  };
+
+  it("aligns the rig hinge axis to the measured chain hinge axis (#82)", () => {
+    const { root, upLeg } = createLegChain();
+    const lm = buildMockLandmarks();
+    // three 空間: 大腿 u=(0,0,-1)（背面水平・バインドから 90°）、
+    // 下腿 w=(-1,0,0) → 実測ヒンジ軸 u×w = (0,1,0)
+    lm[LM.LEFT_HIP] = { x: 0, y: 0, z: 0, visibility: 0.9 };
+    lm[LM.LEFT_KNEE] = { x: 0, y: 0, z: 1, visibility: 0.9 };
+    lm[LM.LEFT_ANKLE] = { x: -1, y: 0, z: 1, visibility: 0.9 };
+    applyPoseToSkeleton(root, lm);
+    root.updateMatrixWorld(true);
+    const q = upLeg.getWorldQuaternion(new THREE.Quaternion());
+    // バインドのヒンジ local = cross((0,-1,0), (0,0,-1)) = (1,0,0)
+    const hinge = new THREE.Vector3(1, 0, 0).applyQuaternion(q);
+    expect(hinge.angleTo(new THREE.Vector3(0, 1, 0))).toBeLessThan(1e-4);
+    // aim（ボーン方向）はツイスト後も保たれる
+    const dir = new THREE.Vector3(0, -1, 0).applyQuaternion(q);
+    expect(dir.angleTo(new THREE.Vector3(0, 0, -1))).toBeLessThan(1e-4);
+  });
+
+  it("skips the twist when the chain is nearly straight (#82)", () => {
+    const { root, upLeg } = createLegChain();
+    const lm = buildMockLandmarks();
+    // 直線チェーン（曲げ 0°）→ ヒンジ軸が定義できず swing のみ
+    lm[LM.LEFT_HIP] = { x: 0, y: 0, z: 0, visibility: 0.9 };
+    lm[LM.LEFT_KNEE] = { x: 0, y: 0, z: 1, visibility: 0.9 };
+    lm[LM.LEFT_ANKLE] = { x: 0, y: 0, z: 2, visibility: 0.9 };
+    applyPoseToSkeleton(root, lm);
+    root.updateMatrixWorld(true);
+    const q = upLeg.getWorldQuaternion(new THREE.Quaternion());
+    const pureAim = new THREE.Quaternion().setFromUnitVectors(
+      new THREE.Vector3(0, -1, 0),
+      new THREE.Vector3(0, 0, -1)
+    );
+    expect(q.angleTo(pureAim)).toBeLessThan(1e-4);
+  });
+
+  it("skips the twist when the bone stays near its bind direction (#82)", () => {
+    const { root, upLeg } = createLegChain();
+    const lm = buildMockLandmarks();
+    // 大腿はバインドとほぼ同じ真下（aim 0° < minAimRad）だが、
+    // 下腿が左へ折れてヒンジ軸 (0,0,1) ≠ バインドの (1,0,0)
+    lm[LM.LEFT_HIP] = { x: 0, y: 0, z: 0, visibility: 0.9 };
+    lm[LM.LEFT_KNEE] = { x: 0, y: 1, z: 0, visibility: 0.9 };
+    lm[LM.LEFT_ANKLE] = { x: 1, y: 1, z: 0, visibility: 0.9 };
+    applyPoseToSkeleton(root, lm);
+    root.updateMatrixWorld(true);
+    const q = upLeg.getWorldQuaternion(new THREE.Quaternion());
+    // ツイスト補正が適用されていない（ヒンジ local (1,0,0) は動かない）
+    const hinge = new THREE.Vector3(1, 0, 0).applyQuaternion(q);
+    expect(hinge.angleTo(new THREE.Vector3(1, 0, 0))).toBeLessThan(1e-4);
+  });
 });
 
 describe("getVertexMuscleId", () => {

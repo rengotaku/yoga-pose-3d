@@ -20,6 +20,8 @@ import { applyContactIK } from "./ik";
 import { applyTorsoPushOut } from "./collision";
 import {
   applyGoldenRotations,
+  diagnosePose,
+  exportBoneChildDirs,
   exportWorldRotations,
   scorePose,
   type GoldenPose,
@@ -277,6 +279,16 @@ export const PoseViewer3D: React.FC = () => {
               const goldenQ = exportWorldRotations(mannequin);
               return scorePose(goldenQ, actual);
             },
+            diagGolden: (golden: GoldenPose) => {
+              // scoreGolden と同じ手順で採取し、角度差を swing/twist に分解して
+              // 返す（#82 診断）。呼び出し後はゴールデンが表示されたままになる
+              const actual = exportWorldRotations(mannequin);
+              const childDirs = exportBoneChildDirs(mannequin);
+              applyGoldenRotations(mannequin, initialQuaternionsRef.current, golden);
+              groundMannequin(mannequin, FLOOR_Y);
+              const goldenQ = exportWorldRotations(mannequin);
+              return diagnosePose(goldenQ, actual, childDirs);
+            },
             setView: (azimuthDeg: number, elevationDeg: number) => {
               if (!cameraRef.current || !controlsRef.current) return;
               const target = controlsRef.current.target;
@@ -362,6 +374,15 @@ export const PoseViewer3D: React.FC = () => {
       retargetLandmarks,
       fusionApplied ? VISIBILITY_GATE.minDriveFused : undefined
     );
+
+    // ゴールデン指標ハーネスの診断用に、駆動へ実際に使った landmark 配列を
+    // 露出する（#82。dev 専用・読み取り専用の想定）
+    if (import.meta.env.DEV) {
+      const dbg = (window as unknown as Record<string, unknown>).__poseDebug;
+      if (dbg && typeof dbg === "object") {
+        (dbg as Record<string, unknown>).landmarks = retargetLandmarks;
+      }
+    }
 
     // Ensure world matrices are updated for bounding box computation
     mannequin.updateMatrixWorld(true);
