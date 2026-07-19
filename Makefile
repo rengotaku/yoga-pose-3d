@@ -1,5 +1,5 @@
 .PHONY: install compose-ui run build preview stop status lint lint-fix format format-check \
-	test test-watch test-cov check ci clean help
+	test test-watch test-cov check ci clean help golden-check
 
 # Default target
 .DEFAULT_GOAL := help
@@ -84,6 +84,10 @@ golden-render:
 ## pose-score: 実写真のパイプライン出力とゴールデンの角度差からスコアを算出（要: make run 起動済み + e2e/golden/sources.local.json）
 pose-score:
 	node e2e/pose-score.mjs
+
+## golden-check: ゴールデン品質の定量指標（ROM/めり込み/写真整合）を出力（要: make run 起動済み。POSE=<id> で単一）
+golden-check:
+	node e2e/golden-check.mjs
 
 ## check: Run lint + test
 check: lint test
