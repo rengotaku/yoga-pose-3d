@@ -148,6 +148,62 @@ export const computeNeckDirection = (landmarks: RawLandmark[]): THREE.Vector3 | 
 };
 
 /**
+ * 頭部の直交基底クォータニオン（world 目標回転）を計算する（#54）。
+ *
+ * 肩中点→鼻の弦（computeNeckDirection）は直立時も「上+前」を向き頭部ピッチに
+ * ほぼ不感なため、頭部の向きは顔の幾何から取る:
+ * - Z軸(顔前方): 耳中点 → 鼻（見上げれば上向き、後ろ向きなら -Z になる）
+ * - X軸(頭部左): 右耳 → 左耳
+ * - Y軸(頭頂): Z × X
+ *
+ * 顔 landmark の visibility は後頭部向きでも 1.0 になるため、ゲートではなく
+ * 幾何の退化（ゼロ長・平行）のみで null を返す。
+ */
+export const computeHeadRotation = (
+  landmarks: RawLandmark[]
+): THREE.Quaternion | null => {
+  const nose = landmarks[LM.NOSE];
+  const earL = landmarks[LM.LEFT_EAR];
+  const earR = landmarks[LM.RIGHT_EAR];
+  if (!nose || !earL || !earR) return null;
+
+  const earMid = computeMidpoint(earL, earR);
+  const xDir = computeDirection(earR, earL);
+  if (!earMid || !xDir) return null;
+
+  const zAxis = toVec(nose).sub(earMid);
+  if (zAxis.lengthSq() < 1e-10) return null;
+  zAxis.normalize();
+
+  const yAxis = new THREE.Vector3().crossVectors(zAxis, xDir);
+  if (yAxis.lengthSq() < 1e-10) return null;
+  yAxis.normalize();
+  const xAxis = new THREE.Vector3().crossVectors(yAxis, zAxis).normalize();
+
+  const m = new THREE.Matrix4().makeBasis(xAxis, yAxis, zAxis);
+  return new THREE.Quaternion().setFromRotationMatrix(m);
+};
+
+/**
+ * 手（wrist → INDEX/PINKY 中点）の方向ベクトルを計算する（#54）。
+ * Hand ボーンの向きに使う。landmark 欠損・ゼロ長は null。
+ */
+export const computeHandDirection = (
+  landmarks: RawLandmark[],
+  side: "left" | "right"
+): THREE.Vector3 | null => {
+  const wrist = landmarks[side === "left" ? LM.LEFT_WRIST : LM.RIGHT_WRIST];
+  const index = landmarks[side === "left" ? LM.LEFT_INDEX : LM.RIGHT_INDEX];
+  const pinky = landmarks[side === "left" ? LM.LEFT_PINKY : LM.RIGHT_PINKY];
+  if (!wrist || !index || !pinky) return null;
+  const knuckleMid = computeMidpoint(index, pinky);
+  if (!knuckleMid) return null;
+  const dir = knuckleMid.sub(toVec(wrist));
+  if (dir.lengthSq() < 1e-10) return null;
+  return dir.normalize();
+};
+
+/**
  * 左右の腰のランドマークとSpineの方向から、Hipsの直交基底クォータニオンを計算する。
  * X軸(右): RIGHT_HIP -> LEFT_HIP
  * Y軸(上): SpineDirection

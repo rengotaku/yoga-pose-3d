@@ -5,6 +5,8 @@ import {
   computeSpineDirection,
   computeNeckDirection,
   computeDirection,
+  computeHeadRotation,
+  computeHandDirection,
   LIMB_BONE_MAPPINGS,
   computeHipsRotation,
   distributeSpineRotation,
@@ -247,6 +249,22 @@ export const applyPoseToSkeleton = (
     applyRotationToBone(neck, neckDir);
   }
 
+  // 頭部の向き（#54）: 肩→鼻の弦は頭部ピッチに不感なため、耳/鼻の顔基底で
+  // Head の world 回転を絶対値で設定する（Hips と同方式）。見上げ・後ろ向きが
+  // ここで初めて反映される
+  const headName = resolveBoneName("mixamorig:Head", boneNames);
+  if (headName && drivable(LM.NOSE, LM.LEFT_EAR, LM.RIGHT_EAR)) {
+    const head = boneMap.get(headName);
+    const q = computeHeadRotation(landmarks);
+    if (head && q) {
+      const parentQ = head.parent
+        ? head.parent.getWorldQuaternion(new THREE.Quaternion())
+        : new THREE.Quaternion();
+      head.quaternion.copy(parentQ.clone().invert().multiply(q));
+      head.updateMatrixWorld(true);
+    }
+  }
+
   const limbOrder = [
     "mixamorig:LeftUpLeg",
     "mixamorig:LeftLeg",
@@ -269,6 +287,22 @@ export const applyPoseToSkeleton = (
     const bone = boneMap.get(name);
     const dir = computeDirection(landmarks[mapping.parentLm], landmarks[mapping.childLm]);
     applyRotationToBone(bone, dir);
+  }
+
+  // 手の向き（#54）: バインドポーズのままだと指開きの手が不自然な角度で残る。
+  // wrist→(INDEX+PINKY)/2 の方向へ Hand ボーンを向ける
+  const handSpecs: ["mixamorig:LeftHand" | "mixamorig:RightHand", "left" | "right"][] = [
+    ["mixamorig:LeftHand", "left"],
+    ["mixamorig:RightHand", "right"],
+  ];
+  for (const [mixamoName, side] of handSpecs) {
+    const wristLm = side === "left" ? LM.LEFT_WRIST : LM.RIGHT_WRIST;
+    const indexLm = side === "left" ? LM.LEFT_INDEX : LM.RIGHT_INDEX;
+    const pinkyLm = side === "left" ? LM.LEFT_PINKY : LM.RIGHT_PINKY;
+    if (!drivable(wristLm, indexLm, pinkyLm)) continue;
+    const name = resolveBoneName(mixamoName, boneNames);
+    if (!name) continue;
+    applyRotationToBone(boneMap.get(name), computeHandDirection(landmarks, side));
   }
 };
 
