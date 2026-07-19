@@ -27,7 +27,31 @@ export const LM = {
   RIGHT_FOOT_INDEX: 32,
 } as const;
 
-export type RawLandmark = { x: number; y: number; z: number };
+export type RawLandmark = { x: number; y: number; z: number; visibility?: number };
+
+/**
+ * landmark visibility ゲーティングのしきい値（#53）。
+ *
+ * MediaPipe はオクルージョンされた関節にも座標を返すが、visibility が低い点の
+ * world 座標はほぼハルシネーションで、全信頼で使うとリターゲット・接地 IK が
+ * 破綻する（実測: 後ろ向き膝立ち画像で脚の visibility 0.06〜0.4）。
+ *
+ * - minDrive: ボーン駆動に使う下限。未満はバインドポーズ維持
+ * - minContact: 接地 IK の接地候補に使う下限。IK は全身を動かすため高いバー
+ * - minDraw: 2D 棒人間描画の下限。未満の点・結線は描かない
+ */
+export const VISIBILITY_GATE = {
+  minDrive: 0.3,
+  minContact: 0.5,
+  minDraw: 0.3,
+} as const;
+
+/**
+ * landmark が visibility しきい値を満たすか。visibility が無い入力
+ * （テストフィクスチャ・旧データ）は「情報なし」として可視扱いにする。
+ */
+export const isVisible = (lm: RawLandmark | undefined, min: number): boolean =>
+  lm !== undefined && (lm.visibility === undefined || lm.visibility >= min);
 
 /** MediaPipe 座標 → Three.js 座標（X そのまま, Y 反転, Z 反転） */
 export const toVec = (l: RawLandmark): THREE.Vector3 =>

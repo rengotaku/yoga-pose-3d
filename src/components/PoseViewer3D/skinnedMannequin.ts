@@ -11,7 +11,7 @@ import {
   computeBackbendArchRotations,
   BONE_ALIASES,
 } from "./retarget";
-import { heatColor } from "./muscles";
+import { heatColor, isVisible, LM, VISIBILITY_GATE } from "./muscles";
 import type { RawLandmark, ActivationMap } from "./muscles";
 
 const NEUTRAL = 0xb98a7a;
@@ -140,6 +140,11 @@ export const applyPoseToSkeleton = (
   const bones = Array.from(boneMap.values());
   const boneNames = bones.map((b) => b.name);
 
+  // 低 visibility の landmark の world 座標はハルシネーションのことが多いため、
+  // その landmark に依存するボーンは駆動せずバインドポーズを維持する（#53）
+  const drivable = (...indices: number[]): boolean =>
+    indices.every((i) => isVisible(landmarks[i], VISIBILITY_GATE.minDrive));
+
   const computeWorldDelta = (
     bone: THREE.Bone | undefined,
     targetDir: THREE.Vector3 | null
@@ -181,8 +186,15 @@ export const applyPoseToSkeleton = (
     }
   };
 
+  const torsoDrivable = drivable(
+    LM.LEFT_HIP,
+    LM.RIGHT_HIP,
+    LM.LEFT_SHOULDER,
+    LM.RIGHT_SHOULDER
+  );
+
   const hipsName = resolveBoneName("mixamorig:Hips", boneNames);
-  if (hipsName) {
+  if (hipsName && torsoDrivable) {
     const hips = boneMap.get(hipsName);
     const q = computeHipsRotation(landmarks);
     if (hips && q) {
@@ -195,7 +207,7 @@ export const applyPoseToSkeleton = (
   }
 
   const spineName = resolveBoneName("mixamorig:Spine", boneNames);
-  if (spineName) {
+  if (spineName && torsoDrivable) {
     const spine = boneMap.get(spineName);
     const spineDir = computeSpineDirection(landmarks);
 
@@ -229,7 +241,7 @@ export const applyPoseToSkeleton = (
   }
 
   const neckName = resolveBoneName("mixamorig:Neck", boneNames);
-  if (neckName) {
+  if (neckName && drivable(LM.NOSE, LM.LEFT_SHOULDER, LM.RIGHT_SHOULDER)) {
     const neck = boneMap.get(neckName);
     const neckDir = computeNeckDirection(landmarks);
     applyRotationToBone(neck, neckDir);
@@ -251,6 +263,7 @@ export const applyPoseToSkeleton = (
   for (const mixamoName of limbOrder) {
     const mapping = LIMB_BONE_MAPPINGS[mixamoName];
     if (!mapping) continue;
+    if (!drivable(mapping.parentLm, mapping.childLm)) continue;
     const name = resolveBoneName(mixamoName, boneNames);
     if (!name) continue;
     const bone = boneMap.get(name);

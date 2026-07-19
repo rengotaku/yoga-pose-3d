@@ -92,6 +92,39 @@ describe("detectGroundContacts", () => {
     expect(contacts.leftKnee).toBe(false);
     expect(contacts.rightKnee).toBe(false);
   });
+
+  it("excludes low-visibility candidates from contacts (#53)", () => {
+    // 実測値ベース（後ろ向き膝立ち側屈画像）: 支持肢（脚・床手）の visibility が
+    // すべて minContact 未満 → 接地なし（IK スキップ）になること。
+    // 唯一 visibility が高い左手首は挙上腕で床から遠く、接地にならない
+    const lm = emptyLandmarks();
+    lm[LM.LEFT_WRIST] = { x: 0.871, y: -0.35, z: 0.04, visibility: 0.8 };
+    lm[LM.RIGHT_WRIST] = { x: 0.434, y: 0.302, z: 0.005, visibility: 0.4 };
+    lm[LM.LEFT_KNEE] = { x: -0.211, y: 0.34, z: -0.081, visibility: 0.37 };
+    lm[LM.RIGHT_KNEE] = { x: -0.086, y: 0.269, z: -0.001, visibility: 0.21 };
+    lm[LM.LEFT_FOOT_INDEX] = { x: 0.326, y: 0.383, z: 0.048, visibility: 0.15 };
+    lm[LM.RIGHT_FOOT_INDEX] = { x: 0.288, y: 0.449, z: 0.11, visibility: 0.06 };
+    expect(detectGroundContacts(lm)).toEqual({
+      leftFoot: false,
+      rightFoot: false,
+      leftHand: false,
+      rightHand: false,
+      leftKnee: false,
+      rightKnee: false,
+    });
+  });
+
+  it("keeps visible contacts even when a lower hallucinated point exists (#53)", () => {
+    // 床基準は全候補から取るが、接地分類は可視の landmark のみ
+    const lm = emptyLandmarks();
+    lm[LM.LEFT_FOOT_INDEX] = { x: 0.3, y: 0.9, z: 0, visibility: 0.95 };
+    lm[LM.RIGHT_FOOT_INDEX] = { x: -0.3, y: 0.95, z: 0, visibility: 0.1 };
+    lm[LM.LEFT_WRIST] = { x: 0.7, y: -0.4, z: 0, visibility: 0.95 };
+    lm[LM.RIGHT_WRIST] = { x: -0.7, y: -0.4, z: 0, visibility: 0.95 };
+    const contacts = detectGroundContacts(lm);
+    expect(contacts.leftFoot).toBe(true);
+    expect(contacts.rightFoot).toBe(false);
+  });
 });
 
 /** root(股) → mid(膝) → end(足首) の 2-bone チェーンを組む */
