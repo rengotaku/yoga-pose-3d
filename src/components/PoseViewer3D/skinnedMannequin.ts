@@ -7,6 +7,9 @@ import {
   computeDirection,
   computeHeadRotation,
   computeHandDirection,
+  computeChainHingeAxis,
+  computeTwistCorrection,
+  LIMB_TWIST,
   LIMB_BONE_MAPPINGS,
   computeHipsRotation,
   computeSpineTwistRotation,
@@ -129,6 +132,70 @@ export const groundMannequin = (root: THREE.Object3D, floorY: number): void => {
   root.updateMatrixWorld(true);
 };
 
+/**
+ * 四肢 2 ボーンチェーンのツイスト制御仕様（#82）。closingWorldBind は
+ * バインドポーズ基準で関節が「閉じる」側の world 方向（膝 = 背面 -Z、
+ * 肘 = 腹側 +Z。マネキンは +Z 正面のバインドポーズ前提 — BACKBEND_ARCH 等と
+ * 同じ規約）。バインド時の実ボーン方向との外積からリグ固有のヒンジ軸
+ * （ボーン local 表現）を実行時に導出するため、リグの軸規約に依存しない。
+ */
+const LIMB_CHAINS = [
+  {
+    rootBone: "mixamorig:LeftUpLeg",
+    midBone: "mixamorig:LeftLeg",
+    lms: [LM.LEFT_HIP, LM.LEFT_KNEE, LM.LEFT_ANKLE],
+    closingWorldBind: new THREE.Vector3(0, 0, -1),
+  },
+  {
+    rootBone: "mixamorig:RightUpLeg",
+    midBone: "mixamorig:RightLeg",
+    lms: [LM.RIGHT_HIP, LM.RIGHT_KNEE, LM.RIGHT_ANKLE],
+    closingWorldBind: new THREE.Vector3(0, 0, -1),
+  },
+  {
+    rootBone: "mixamorig:LeftArm",
+    midBone: "mixamorig:LeftForeArm",
+    lms: [LM.LEFT_SHOULDER, LM.LEFT_ELBOW, LM.LEFT_WRIST],
+    closingWorldBind: new THREE.Vector3(0, 0, 1),
+  },
+  {
+    rootBone: "mixamorig:RightArm",
+    midBone: "mixamorig:RightForeArm",
+    lms: [LM.RIGHT_SHOULDER, LM.RIGHT_ELBOW, LM.RIGHT_WRIST],
+    closingWorldBind: new THREE.Vector3(0, 0, 1),
+  },
+] as const;
+
+type BindChainInfo = {
+  /** ヒンジ軸（屈曲の回転軸）のボーン local 表現 */
+  hingeLocal: THREE.Vector3;
+  /** バインドポーズでのボーン方向（world）。aim 角ゲートの基準に使う */
+  dirBind: THREE.Vector3;
+};
+
+/**
+ * バインドポーズのボーン方向と closing 方向から、ヒンジ軸（屈曲の回転軸）の
+ * ボーン local 表現とバインド方向を導出する（#82）。ボーンがバインドポーズに
+ * あるときに呼ぶこと（applyPoseToSkeleton の呼び出し前リセット契約に依存）。
+ */
+const bindChainInfo = (
+  bone: THREE.Bone | undefined,
+  closingWorldBind: THREE.Vector3
+): BindChainInfo | null => {
+  if (!bone || bone.children.length === 0) return null;
+  bone.updateMatrixWorld(true);
+  const bonePos = bone.getWorldPosition(new THREE.Vector3());
+  const childPos = bone.children[0].getWorldPosition(new THREE.Vector3());
+  const dirBind = childPos.sub(bonePos);
+  if (dirBind.lengthSq() < 1e-10) return null;
+  dirBind.normalize();
+  const hingeWorld = new THREE.Vector3().crossVectors(dirBind, closingWorldBind);
+  if (hingeWorld.lengthSq() < 1e-8) return null;
+  hingeWorld.normalize();
+  const invQ = bone.getWorldQuaternion(new THREE.Quaternion()).invert();
+  return { hingeLocal: hingeWorld.applyQuaternion(invQ), dirBind };
+};
+
 export const applyPoseToSkeleton = (
   root: THREE.Object3D,
   landmarks: RawLandmark[],
@@ -143,6 +210,17 @@ export const applyPoseToSkeleton = (
 
   const bones = Array.from(boneMap.values());
   const boneNames = bones.map((b) => b.name);
+
+  // ヒンジ軸の local 表現とバインド方向はバインドポーズでのみ導出できるため、
+  // 駆動を始める前にチェーン全ボーン分をキャプチャする（#82）
+  const bindInfos = new Map<string, BindChainInfo | null>();
+  for (const chain of LIMB_CHAINS) {
+    for (const mixamoName of [chain.rootBone, chain.midBone]) {
+      const name = resolveBoneName(mixamoName, boneNames);
+      const bone = name ? boneMap.get(name) : undefined;
+      bindInfos.set(mixamoName, bindChainInfo(bone, chain.closingWorldBind));
+    }
+  }
 
   // 低 visibility の landmark の world 座標はハルシネーションのことが多いため、
   // その landmark に依存するボーンは駆動せずバインドポーズを維持する（#53）。
@@ -284,20 +362,58 @@ export const applyPoseToSkeleton = (
     }
   }
 
-  const limbOrder = [
-    "mixamorig:LeftUpLeg",
-    "mixamorig:LeftLeg",
-    "mixamorig:LeftFoot",
-    "mixamorig:RightUpLeg",
-    "mixamorig:RightLeg",
-    "mixamorig:RightFoot",
-    "mixamorig:LeftArm",
-    "mixamorig:LeftForeArm",
-    "mixamorig:RightArm",
-    "mixamorig:RightForeArm",
-  ];
+  // swing 適用後のボーン軸まわりツイストを、リグのヒンジ軸が landmark 実測の
+  // ヒンジ軸（チェーン平面法線）へ揃うよう補正する（#82 ポールベクタ準拠）。
+  // swing のみの駆動ではツイストが未定義値になり、膝の折れる向き・kneecap や
+  // 肘の向きが崩れる
+  const applyLimbTwist = (
+    bone: THREE.Bone | undefined,
+    boneDir: THREE.Vector3 | null,
+    bindInfo: BindChainInfo | null | undefined,
+    hingeAxis: THREE.Vector3 | null
+  ): void => {
+    if (!bone || !boneDir || !bindInfo || !hingeAxis) return;
+    // バインド近傍のボーンはデフォルトツイストが正しいことが多いため補正しない
+    // （LIMB_TWIST.minAimRad の設計メモ参照）
+    if (bindInfo.dirBind.angleTo(boneDir) < LIMB_TWIST.minAimRad) return;
+    bone.updateMatrixWorld(true);
+    const hingeWorld = bindInfo.hingeLocal
+      .clone()
+      .applyQuaternion(bone.getWorldQuaternion(new THREE.Quaternion()));
+    const angle = computeTwistCorrection(boneDir, hingeWorld, hingeAxis);
+    if (angle === null) return;
+    const axis = boneDir.clone().normalize();
+    applyWorldDeltaToBone(bone, new THREE.Quaternion().setFromAxisAngle(axis, angle));
+  };
 
-  for (const mixamoName of limbOrder) {
+  // 四肢は「root aim → root twist → mid aim → mid twist」の順で駆動する。
+  // twist は world delta で子孫にも波及するため、mid の aim より先に root の
+  // twist を確定させる必要がある（後から root を捻ると mid の方向が壊れる）
+  for (const chain of LIMB_CHAINS) {
+    const [aLm, bLm, cLm] = chain.lms;
+    const hingeAxis = drivable(aLm, bLm, cLm)
+      ? computeChainHingeAxis(landmarks[aLm], landmarks[bLm], landmarks[cLm])
+      : null;
+
+    if (drivable(aLm, bLm)) {
+      const name = resolveBoneName(chain.rootBone, boneNames);
+      const bone = name ? boneMap.get(name) : undefined;
+      const dir = computeDirection(landmarks[aLm], landmarks[bLm]);
+      applyRotationToBone(bone, dir);
+      applyLimbTwist(bone, dir, bindInfos.get(chain.rootBone), hingeAxis);
+    }
+    if (drivable(bLm, cLm)) {
+      const name = resolveBoneName(chain.midBone, boneNames);
+      const bone = name ? boneMap.get(name) : undefined;
+      const dir = computeDirection(landmarks[bLm], landmarks[cLm]);
+      applyRotationToBone(bone, dir);
+      applyLimbTwist(bone, dir, bindInfos.get(chain.midBone), hingeAxis);
+    }
+  }
+
+  // 足は脚チェーンの確定後に aim する（親のツイストが先に確定している必要がある）
+  const footOrder = ["mixamorig:LeftFoot", "mixamorig:RightFoot"];
+  for (const mixamoName of footOrder) {
     const mapping = LIMB_BONE_MAPPINGS[mixamoName];
     if (!mapping) continue;
     if (!drivable(mapping.parentLm, mapping.childLm)) continue;

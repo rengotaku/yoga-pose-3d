@@ -130,6 +130,81 @@ export const exportWorldRotations = (root: THREE.Object3D): Record<string, QuatT
   return out;
 };
 
+/**
+ * スコア対象ボーンの「子方向単位ベクトル（ボーン local）」を取り出す（#82 診断用）。
+ * swing/twist 分解の回転軸に使う。子を持たないボーンは含まれない。
+ */
+export const exportBoneChildDirs = (
+  root: THREE.Object3D
+): Record<string, [number, number, number]> => {
+  const bones = collectBones(root);
+  const boneNames = Array.from(bones.keys());
+
+  const out: Record<string, [number, number, number]> = {};
+  for (const stdName of Object.keys(SCORE_BONE_WEIGHTS)) {
+    const actualName = resolveBoneName(stdName, boneNames);
+    const bone = actualName ? bones.get(actualName) : undefined;
+    if (!bone || bone.children.length === 0) continue;
+    const dir = bone.children[0].position.clone();
+    if (dir.lengthSq() < 1e-12) continue;
+    dir.normalize();
+    out[stdName] = [dir.x, dir.y, dir.z];
+  }
+  return out;
+};
+
+export type JointDiag = {
+  angleDeg: number;
+  /** ボーン方向（子方向）のズレ角。childDirs に無いボーンは null */
+  swingDeg: number | null;
+  /** swing を除いた残差（≒ボーン軸まわりツイスト）。childDirs に無いボーンは null */
+  twistDeg: number | null;
+};
+
+/**
+ * golden/actual の角度差を swing（ボーン方向のズレ）と twist（swing 除去後の
+ * 残差 ≒ ボーン軸まわり）に分解する診断（#82）。ヨー正規化は scorePose と同一。
+ * 「方向は合っているのにスコアが低い」（ツイスト未制御）と「方向自体がズレている」
+ * （landmark 入力・深度潰れ）を切り分けるために使う。
+ */
+export const diagnosePose = (
+  golden: Record<string, QuatTuple>,
+  actual: Record<string, QuatTuple>,
+  childDirs: Record<string, [number, number, number]>
+): Record<string, JointDiag> => {
+  const yaw = computeYawAlignment(golden, actual);
+  const out: Record<string, JointDiag> = {};
+
+  for (const stdName of Object.keys(SCORE_BONE_WEIGHTS)) {
+    const g = golden[stdName];
+    const a = actual[stdName];
+    if (!g || !a) continue;
+    const qg = new THREE.Quaternion(g[0], g[1], g[2], g[3]).normalize();
+    const qa = yaw
+      .clone()
+      .multiply(new THREE.Quaternion(a[0], a[1], a[2], a[3]).normalize());
+    const angleDeg = quaternionAngleDeg(g, [qa.x, qa.y, qa.z, qa.w]);
+
+    const v = childDirs[stdName];
+    if (!v) {
+      out[stdName] = { angleDeg, swingDeg: null, twistDeg: null };
+      continue;
+    }
+    const local = new THREE.Vector3(v[0], v[1], v[2]);
+    const dg = local.clone().applyQuaternion(qg).normalize();
+    const da = local.clone().applyQuaternion(qa).normalize();
+    const swingDeg = THREE.MathUtils.radToDeg(da.angleTo(dg));
+    const swing = new THREE.Quaternion().setFromUnitVectors(da, dg);
+    const rectified = swing.multiply(qa);
+    const twistDeg = quaternionAngleDeg(
+      [qg.x, qg.y, qg.z, qg.w],
+      [rectified.x, rectified.y, rectified.z, rectified.w]
+    );
+    out[stdName] = { angleDeg, swingDeg, twistDeg };
+  }
+  return out;
+};
+
 /** 2 つの回転の測地角度差（度）。q と -q の同値性を考慮する */
 export const quaternionAngleDeg = (a: QuatTuple, b: QuatTuple): number => {
   const qa = new THREE.Quaternion(a[0], a[1], a[2], a[3]).normalize();

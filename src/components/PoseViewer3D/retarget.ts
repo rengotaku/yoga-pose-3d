@@ -116,6 +116,71 @@ export const LIMB_BONE_MAPPINGS: Record<string, JointMapping> = {
 };
 
 /**
+ * 四肢ツイスト制御のパラメータ（#82）。
+ *
+ * minBendRad: チェーン（親→関節→子）の屈曲がこれ未満（ほぼ直線）のときは
+ * ヒンジ軸 u×w がノイズ支配になるためツイスト補正をスキップする。直線に近い
+ * 四肢のツイストは chain 幾何からは原理的に決められない（手 landmark 由来の
+ * 前腕ロール等は別欠陥のスコープ）。
+ *
+ * minCorrectionRad: 補正量がこれ未満なら適用しない。landmark ノイズによる
+ * ヒンジ軸の誤差は実測でおよそ 10〜25° あり、小さな補正は信号よりノイズが
+ * 支配的になる（tabletop で正しかったツイストを 8→25° に悪化させた実測から
+ * 導入）。大きくズレたツイスト（cross-seat の 60〜110°）だけを直す。
+ *
+ * minAimRad: ボーンの目標方向がバインドポーズ方向からこれ未満しか離れて
+ * いないときは補正しない。swing-only 駆動のデフォルトツイストはバインド由来
+ * なので、バインド近傍では正しいことが多く（tabletop の鉛直大腿: 誤差 8°）、
+ * 大きく回った四肢でだけ崩壊する（cross-seat の水平大腿: 誤差 74〜108°）。
+ * ノイズ入りのヒンジ軸で「元々正しいツイスト」を上書きしないためのゲート。
+ */
+export const LIMB_TWIST = {
+  minBendRad: (25 * Math.PI) / 180,
+  minCorrectionRad: (25 * Math.PI) / 180,
+  minAimRad: (45 * Math.PI) / 180,
+} as const;
+
+/**
+ * 曲がった 2 ボーンチェーンの実測ヒンジ軸を返す（#82）。
+ * u（親→関節）から w（関節→子）への回転軸 normalize(u × w)。曲げ角が
+ * LIMB_TWIST.minBendRad 未満（|u × w| = sin(曲げ角) が小さい）は null。
+ */
+export const computeChainHingeAxis = (
+  a?: RawLandmark,
+  b?: RawLandmark,
+  c?: RawLandmark
+): THREE.Vector3 | null => {
+  const u = computeDirection(a, b);
+  const w = computeDirection(b, c);
+  if (!u || !w) return null;
+  const axis = new THREE.Vector3().crossVectors(u, w);
+  if (axis.length() < Math.sin(LIMB_TWIST.minBendRad)) return null;
+  return axis.normalize();
+};
+
+/**
+ * ボーン軸 axis まわりで current を target へ揃える符号付きツイスト角（#82）。
+ * 双方を axis 直交平面へ射影して角度を測る。射影退化、または補正量が
+ * LIMB_TWIST.minCorrectionRad 未満（ノイズフロア以下）は null。
+ */
+export const computeTwistCorrection = (
+  axis: THREE.Vector3,
+  current: THREE.Vector3,
+  target: THREE.Vector3
+): number | null => {
+  const axisN = axis.clone().normalize();
+  const pc = current.clone().projectOnPlane(axisN);
+  const pt = target.clone().projectOnPlane(axisN);
+  if (pc.lengthSq() < 1e-8 || pt.lengthSq() < 1e-8) return null;
+  pc.normalize();
+  pt.normalize();
+  const angle = pc.angleTo(pt);
+  if (angle < LIMB_TWIST.minCorrectionRad) return null;
+  const sign = new THREE.Vector3().crossVectors(pc, pt).dot(axisN) >= 0 ? 1 : -1;
+  return angle * sign;
+};
+
+/**
  * 体幹（Spine）の方向ベクトルを計算する。
  * 腰の中点から肩の中点へのベクトル。
  */
