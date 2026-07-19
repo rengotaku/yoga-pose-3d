@@ -26,7 +26,7 @@ vi.mock("@mediapipe/tasks-vision", () => {
   };
 });
 
-import { DrawingUtils } from "@mediapipe/tasks-vision";
+import { DrawingUtils, PoseLandmarker } from "@mediapipe/tasks-vision";
 
 describe("PoseCanvas", () => {
   beforeEach(() => {
@@ -112,5 +112,31 @@ describe("PoseCanvas", () => {
       (DrawingUtils as unknown as { lerp: ReturnType<typeof vi.fn> }).lerp
     ).toHaveBeenCalled();
     expect(radius).toBe(2);
+  });
+
+  it("filters low-visibility landmarks and connections from drawing (#53)", () => {
+    const connections = PoseLandmarker.POSE_CONNECTIONS as unknown as {
+      start: number;
+      end: number;
+    }[];
+    connections.push({ start: 0, end: 1 }, { start: 0, end: 2 });
+    try {
+      usePoseStore.getState().setImageSrc("test.jpg");
+      const lms = [
+        { x: 0, y: 0, z: 0, visibility: 1 },
+        { x: 0.1, y: 0.1, z: 0, visibility: 0.1 },
+        { x: 0.2, y: 0.2, z: 0, visibility: 0.9 },
+      ];
+      usePoseStore.getState().setPoseResult(lms, []);
+
+      render(<PoseCanvas />);
+
+      // 低 visibility (0.1) の点は描画対象から除外される
+      expect(mockDrawLandmarks.mock.calls[0][0]).toEqual([lms[0], lms[2]]);
+      // 結線は両端が可視のものだけ渡される（0-1 は落ち、0-2 は残る）
+      expect(mockDrawConnectors.mock.calls[0][1]).toEqual([{ start: 0, end: 2 }]);
+    } finally {
+      connections.length = 0;
+    }
   });
 });

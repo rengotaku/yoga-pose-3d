@@ -86,6 +86,50 @@ describe("applyPoseToSkeleton", () => {
     root.add(mesh);
     expect(() => applyPoseToSkeleton(root, buildMockLandmarks())).not.toThrow();
   });
+
+  const createArmChain = () => {
+    const arm = new THREE.Bone();
+    arm.name = "mixamorig:LeftArm";
+    const foreArm = new THREE.Bone();
+    foreArm.name = "mixamorig:LeftForeArm";
+    foreArm.position.set(0, -1, 0);
+    const hand = new THREE.Bone();
+    hand.name = "mixamorig:LeftHand";
+    hand.position.set(0, -1, 0);
+    arm.add(foreArm);
+    foreArm.add(hand);
+    const root = new THREE.Group();
+    root.add(arm);
+    root.updateMatrixWorld(true);
+    return { root, arm };
+  };
+
+  it("drives limb bones when landmarks are visible enough (#53)", () => {
+    const { root, arm } = createArmChain();
+    const lm = buildMockLandmarks();
+    lm[LM.LEFT_SHOULDER] = { x: 0, y: 0, z: 0, visibility: 0.9 };
+    lm[LM.LEFT_ELBOW] = { x: 1, y: 0, z: 0, visibility: 0.9 };
+    applyPoseToSkeleton(root, lm);
+    expect(arm.quaternion.equals(new THREE.Quaternion())).toBe(false);
+  });
+
+  it("skips limb bones whose landmarks have low visibility (#53)", () => {
+    const { root, arm } = createArmChain();
+    const lm = buildMockLandmarks();
+    lm[LM.LEFT_SHOULDER] = { x: 0, y: 0, z: 0, visibility: 0.9 };
+    lm[LM.LEFT_ELBOW] = { x: 1, y: 0, z: 0, visibility: 0.1 };
+    applyPoseToSkeleton(root, lm);
+    expect(arm.quaternion.equals(new THREE.Quaternion())).toBe(true);
+  });
+
+  it("keeps driving when visibility is absent (backward compat, #53)", () => {
+    const { root, arm } = createArmChain();
+    const lm = buildMockLandmarks();
+    lm[LM.LEFT_SHOULDER] = { x: 0, y: 0, z: 0 };
+    lm[LM.LEFT_ELBOW] = { x: 1, y: 0, z: 0 };
+    applyPoseToSkeleton(root, lm);
+    expect(arm.quaternion.equals(new THREE.Quaternion())).toBe(false);
+  });
 });
 
 describe("getVertexMuscleId", () => {

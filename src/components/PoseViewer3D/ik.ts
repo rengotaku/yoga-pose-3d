@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import { LM, type RawLandmark } from "./muscles";
+import { isVisible, LM, VISIBILITY_GATE, type RawLandmark } from "./muscles";
 import { resolveBoneName } from "./retarget";
 
 /**
@@ -51,8 +51,14 @@ export type ContactKey = LimbKey | KneeKey;
 /**
  * MediaPipe landmarks（world 座標、y 下向き正）から接地している末端を検知する。
  * 足先（FOOT_INDEX）・手首（WRIST）・膝（KNEE）のうち、最下点（y 最大）から
- * contactThresholdM 以内のものを接地と分類する。少なくとも最下点の 1 肢は
- * 常に接地扱いになる（静止ポーズでは何かが体を支えているため妥当）。
+ * contactThresholdM 以内のものを接地と分類する。
+ *
+ * 床基準（最下点）は visibility に関係なく全候補から取る（低 visibility でも
+ * ポーズの下端の目安にはなる）が、接地と分類してよいのは visibility が
+ * minContact 以上の landmark のみ（#53）。接地 IK は全身を動かすため、
+ * ハルシネーション座標を接地扱いすると胴体ごと引き込まれて破綻する。
+ * 支持肢が全て低 visibility の場合は接地なし（IK スキップ）になり、
+ * 接地は groundMannequin の床スナップに任せる。
  *
  * 膝は床付近にあるだけでは接地とみなさず、腿がほぼ鉛直（股関節が膝の真上 =
  * 膝立ち）のときだけ接地扱いにする。坐位（あぐら等）でも膝は床に近づくが、
@@ -85,7 +91,9 @@ export const detectGroundContacts = (
       key === "leftKnee" || key === "rightKnee"
         ? CONTACT_IK.kneeContactThresholdM
         : CONTACT_IK.contactThresholdM;
-    if (lm && ground - lm.y <= threshold) result[key] = true;
+    if (lm && isVisible(lm, VISIBILITY_GATE.minContact) && ground - lm.y <= threshold) {
+      result[key] = true;
+    }
   }
   const kneeToHip: [KneeKey, number, number][] = [
     ["leftKnee", LM.LEFT_KNEE, LM.LEFT_HIP],
@@ -99,6 +107,7 @@ export const detectGroundContacts = (
     // y 下向き正: knee.y - hip.y = 股関節が膝より上にある鉛直量
     if (
       !hip ||
+      !isVisible(hip, VISIBILITY_GATE.minContact) ||
       thighLen < 1e-6 ||
       (knee.y - hip.y) / thighLen < CONTACT_IK.kneelingMinThighDropRatio
     ) {

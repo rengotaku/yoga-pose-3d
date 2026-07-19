@@ -2,6 +2,7 @@ import React, { useEffect, useRef } from "react";
 import { DrawingUtils, PoseLandmarker } from "@mediapipe/tasks-vision";
 import { usePoseStore } from "../../store/usePoseStore";
 import { usePoseEstimation } from "../../hooks/usePoseEstimation";
+import { isVisible, VISIBILITY_GATE } from "../PoseViewer3D/muscles";
 
 export const PoseCanvas: React.FC = () => {
   const imageSrc = usePoseStore((s) => s.imageSrc);
@@ -34,12 +35,21 @@ export const PoseCanvas: React.FC = () => {
 
     ctx.clearRect(0, 0, canvas.width, canvas.height);
 
+    // 低 visibility（オクルージョン等）の点はハルシネーション座標のことが
+    // 多いため描かない。結線も両端が可視のものだけ描く（#53）
+    const drawable = (lm?: (typeof landmarks)[number]) =>
+      isVisible(lm, VISIBILITY_GATE.minDraw);
+    const visibleLandmarks = landmarks.filter((lm) => drawable(lm));
+    const visibleConnections = PoseLandmarker.POSE_CONNECTIONS.filter(
+      ({ start, end }) => drawable(landmarks[start]) && drawable(landmarks[end])
+    );
+
     const drawingUtils = new DrawingUtils(ctx);
-    drawingUtils.drawLandmarks(landmarks, {
+    drawingUtils.drawLandmarks(visibleLandmarks, {
       radius: (data) => DrawingUtils.lerp(data.from!.z, -0.15, 0.1, 5, 1),
       color: "#ff0000",
     });
-    drawingUtils.drawConnectors(landmarks, PoseLandmarker.POSE_CONNECTIONS, {
+    drawingUtils.drawConnectors(landmarks, visibleConnections, {
       color: "#00ff00",
       lineWidth: 4,
     });
