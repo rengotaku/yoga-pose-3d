@@ -75,7 +75,6 @@ const EDIT_MARKER_GROUPS = [
 const markerColorFor = (stdName: string): number =>
   EDIT_MARKER_GROUPS.find((g) => g.pattern.test(stdName))?.color ??
   EDIT_MARKER_GROUPS[EDIT_MARKER_GROUPS.length - 1].color;
-const EDIT_MARKER_SELECTED_COLOR = 0xf59e0b;
 const EDIT_MARKER_RADIUS = 0.025;
 const EDIT_MARKER_OPACITY = 0.85;
 /** 選択中マーカーの点滅（ゆっくり）。完全には消さず 1.0↔0.5 をスムーズに振る */
@@ -511,14 +510,11 @@ export function GoldenViewerPage() {
       if (info) controls.attach(info.bone);
       else controls.detach();
     }
-    for (const [actualName, marker] of markerMeshesRef.current.entries()) {
+    for (const marker of markerMeshesRef.current.values()) {
       const material = marker.material as THREE.MeshBasicMaterial;
-      material.color.set(
-        actualName === selectedBone?.actualName
-          ? EDIT_MARKER_SELECTED_COLOR
-          : (marker.userData.baseColor as number)
-      );
+      // 選択中も部位系統色のまま（選択は点滅のみで示す）。
       // 点滅途中で選択が外れた場合に備え、opacity を通常値へ戻す
+      material.color.set(marker.userData.baseColor as number);
       material.opacity = EDIT_MARKER_OPACITY;
     }
     selectedMarkerRef.current = selectedBone
