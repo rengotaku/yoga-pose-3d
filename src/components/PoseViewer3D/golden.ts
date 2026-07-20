@@ -50,10 +50,20 @@ export type PoseScore = {
   /**
    * サマリ（#102）。swingAvg/twistAvg は childDirs 対応の関節に限定した
    * 重み付き平均スコア（0〜1、1 が満点）。対応関節が 0 件なら null。
+   * pose 間で対象集合が変わりうるため、比較時は swingScored / swingWeight
+   * （twistScored / twistWeight）が同一かも確認する必要がある。
    */
   summary: {
     swingAvg: number | null;
     twistAvg: number | null;
+    /** swingAvg に採用した関節数（childDirs が定義された関節数） */
+    swingScored: number;
+    /** swingAvg の分母に使った総重み */
+    swingWeight: number;
+    /** twistAvg に採用した関節数 */
+    twistScored: number;
+    /** twistAvg の分母に使った総重み */
+    twistWeight: number;
     coverage: {
       /** joints に採点として入った関節数 */
       scored: number;
@@ -325,8 +335,10 @@ export const scorePose = (
   let weightTotal = 0;
   let swingWeightedSum = 0;
   let swingWeightTotal = 0;
+  let swingScored = 0;
   let twistWeightedSum = 0;
   let twistWeightTotal = 0;
+  let twistScored = 0;
   const yaw = computeYawAlignment(golden, actual);
   const diag = childDirs ? diagnosePose(golden, actual, childDirs) : undefined;
 
@@ -365,10 +377,12 @@ export const scorePose = (
     if (swingScore != null) {
       swingWeightedSum += swingScore * weight;
       swingWeightTotal += weight;
+      swingScored += 1;
     }
     if (twistScore != null) {
       twistWeightedSum += twistScore * weight;
       twistWeightTotal += weight;
+      twistScored += 1;
     }
   }
 
@@ -383,6 +397,10 @@ export const scorePose = (
     summary: {
       swingAvg: swingWeightTotal > 0 ? swingWeightedSum / swingWeightTotal : null,
       twistAvg: twistWeightTotal > 0 ? twistWeightedSum / twistWeightTotal : null,
+      swingScored,
+      swingWeight: swingWeightTotal,
+      twistScored,
+      twistWeight: twistWeightTotal,
       coverage: {
         scored: scoredCount,
         missing: missingCount,

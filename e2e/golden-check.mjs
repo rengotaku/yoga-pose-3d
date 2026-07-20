@@ -50,7 +50,7 @@ const A_SEG_MAX_DEG = 35;
 
 /**
  * coverage の合格条件（#102）。従来「比較 1/9」でも合格扱いしていたパスを
- * 塞ぐ。閾値の根拠と実測ふるい分けは ADR 0011 参照。
+ * 塞ぐ。閾値の根拠と実測ふるい分けは ADR 0008 参照。
  *   - 比較セグメント数が MIN_SEGMENTS 未満なら FAIL
  *   - 使用された系統数（体幹・左腕・右腕・左脚・右脚 の 5 系統）が
  *     MIN_SYSTEMS 未満なら FAIL
@@ -192,8 +192,19 @@ for (const pose of poses) {
   }
   const photoLm = await landmarksForImage(photoPath);
   if (!photoLm) {
-    console.log("  写真整合:   検出不能（実写真で推定器が人物検出せず）");
-    result.photoMatch.status = "detect_fail_photo";
+    console.log(
+      "  写真整合:   違反（実写真で推定器が人物検出せず、coverage 0/9 で FAIL）"
+    );
+    violation = true;
+    result.photoMatch = {
+      status: "detect_fail_photo",
+      meanDeg: null,
+      over: 0,
+      coverage: 0,
+      systems: 0,
+      coverageFail: true,
+      qualityFail: false,
+    };
     jsonResults.push(result);
     continue;
   }
@@ -241,8 +252,19 @@ for (const pose of poses) {
   }
 
   if (viewMatches.length === 0) {
-    console.log("  写真整合:   検出不能（全視点でマネキンレンダーの人物検出に失敗）");
-    result.photoMatch.status = "detect_fail_render";
+    console.log(
+      "  写真整合:   違反（全視点でマネキンレンダーの人物検出に失敗、coverage 0/9 で FAIL）"
+    );
+    violation = true;
+    result.photoMatch = {
+      status: "detect_fail_render",
+      meanDeg: null,
+      over: 0,
+      coverage: 0,
+      systems: 0,
+      coverageFail: true,
+      qualityFail: false,
+    };
     jsonResults.push(result);
     continue;
   }

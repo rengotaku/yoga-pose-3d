@@ -91,10 +91,12 @@ for (const [pose, photoPath] of entries) {
 
     const swingAvgPct = score.summary?.swingAvg == null ? " -  " : (score.summary.swingAvg * 100).toFixed(1).padStart(4);
     const twistAvgPct = score.summary?.twistAvg == null ? " -  " : (score.summary.twistAvg * 100).toFixed(1).padStart(4);
+    const swingN = score.summary?.swingScored ?? 0;
+    const twistN = score.summary?.twistScored ?? 0;
     const cov = score.summary?.coverage ?? { scored: 0, missing: 0, ratio: 0 };
     console.log(
       `\n=== ${pose}: 総合 ${score.total.toFixed(1)}%  ` +
-        `swing ${swingAvgPct}%  twist ${twistAvgPct}%  ` +
+        `swing ${swingAvgPct}% (n=${swingN})  twist ${twistAvgPct}% (n=${twistN})  ` +
         `coverage ${cov.scored}/${cov.scored + cov.missing} ===`
     );
     const rows = Object.entries(score.joints).sort((a, b) => a[1].score - b[1].score);

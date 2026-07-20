@@ -76,13 +76,13 @@
   world 回転角度差からスコアを算出。`__poseDebug.scoreGolden` の返り値を集計。
   出力には総合 `total`、関節ごとの `angleDeg / score / swingDeg / twistDeg`、
   サマリ `swingAvg / twistAvg / coverage`、分位点 `p10 / median / min` が含まれる
-  （swing/twist の分解は ADR 0008、`diagnosePose` 由来）。`--json <path>` で
-  機械可読出力（hold-out 集計・時系列トラッキング用）。
+  （swing/twist の分解は ADR 0008、`diagnosePose` 由来）。`make pose-score JSON=<path>`
+  で機械可読出力（hold-out 集計・時系列トラッキング用）。
 - **`make golden-check`**（`e2e/golden-check.mjs`）: ゴールデン自体の品質を
   測る指標。ROM 違反 / 自己めり込み / 接地 / 手のひらの向き（#90）に加え、
   複数視点レンダーの再推定 vs 実写真セグメント方向の一致（指標A）。
   ADR 0008 で指標A に **coverage ゲート**（比較セグメント数≧4 かつ 系統≧2）を
   追加し、「比較 1/9」で合格していた kneel-sidebend のようなケースを FAIL にする。
-  `--json <path>` で機械可読出力。
+  `make golden-check JSON=<path>` で機械可読出力。
 - **注意**: 実写真は著作権配慮で `e2e/golden/sources.local.json`（gitignore 済み）に
   ローカルパスを書く運用。CI では回さない。ローカルでの再計測前提。

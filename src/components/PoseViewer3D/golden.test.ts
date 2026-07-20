@@ -170,6 +170,9 @@ describe("scorePose", () => {
     expect(score.joints.Spine.twistDeg!).toBeCloseTo(0, 1);
     expect(score.summary.swingAvg).toBeCloseTo(0, 6);
     expect(score.summary.twistAvg).toBeCloseTo(1, 6);
+    expect(score.summary.swingScored).toBe(1);
+    expect(score.summary.swingWeight).toBe(SCORE_BONE_WEIGHTS.Spine);
+    expect(score.summary.twistScored).toBe(1);
   });
 
   it("leaves swing/twist null when childDirs is not provided", () => {
@@ -188,6 +191,10 @@ describe("scorePose", () => {
     expect(score.joints.Hips.twistScore).toBeNull();
     expect(score.summary.swingAvg).toBeNull();
     expect(score.summary.twistAvg).toBeNull();
+    expect(score.summary.swingScored).toBe(0);
+    expect(score.summary.swingWeight).toBe(0);
+    expect(score.summary.twistScored).toBe(0);
+    expect(score.summary.twistWeight).toBe(0);
   });
 
   it("reports coverage ratio as scored / (scored + missing)", () => {
