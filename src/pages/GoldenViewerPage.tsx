@@ -13,6 +13,9 @@ import {
 import { calculateCameraFit } from "../components/PoseViewer3D/cameraFit";
 import { GOLDEN_POSES, goldenDataHash } from "./goldenPoses";
 
+/** ビルド識別子（#88）。vite の define が無い環境（vitest 等）は "dev" */
+const BUILD_SHA = typeof __GIT_SHA__ !== "undefined" ? __GIT_SHA__ : "dev";
+
 /** 床グリッドの Y 位置（PoseViewer3D と同値） */
 const FLOOR_Y = -1;
 
@@ -217,7 +220,7 @@ export function GoldenViewerPage() {
           ドラッグで回転 / ホイールでズーム / 右ドラッグで平行移動
         </p>
         <p className="text-white/60 text-xs font-mono">
-          build {__GIT_SHA__}
+          build {BUILD_SHA}
           {current ? ` / ${current.pose} data #${goldenDataHash(current)}` : ""}
         </p>
         {status === "loading" && (
