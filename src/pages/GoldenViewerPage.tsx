@@ -6,9 +6,12 @@ import {
   computeSkeletonBoundingBox,
   groundMannequin,
 } from "../components/PoseViewer3D/skinnedMannequin";
-import { applyGoldenRotations } from "../components/PoseViewer3D/golden";
+import {
+  applyGoldenRotations,
+  exportWorldRotations,
+} from "../components/PoseViewer3D/golden";
 import { calculateCameraFit } from "../components/PoseViewer3D/cameraFit";
-import { GOLDEN_POSES } from "./goldenPoses";
+import { GOLDEN_POSES, goldenDataHash } from "./goldenPoses";
 
 /** 床グリッドの Y 位置（PoseViewer3D と同値） */
 const FLOOR_Y = -1;
@@ -151,6 +154,15 @@ export function GoldenViewerPage() {
     applyGoldenRotations(mannequin, initialQuatsRef.current, golden);
     groundMannequin(mannequin, FLOOR_Y);
 
+    // 診断フック（#88 dev 専用）: メインページの適用結果とボーン単位で
+    // 突合するため、この画面の world 回転をエクスポートできるようにする
+    if (import.meta.env.DEV) {
+      (window as unknown as Record<string, unknown>).__goldenDebug = {
+        pose: golden.pose,
+        exportRotations: () => exportWorldRotations(mannequin),
+      };
+    }
+
     let skeleton: THREE.Skeleton | undefined;
     mannequin.traverse((child) => {
       if (!skeleton && child instanceof THREE.SkinnedMesh && child.skeleton) {
@@ -203,6 +215,10 @@ export function GoldenViewerPage() {
         )}
         <p className="text-white/60 text-xs">
           ドラッグで回転 / ホイールでズーム / 右ドラッグで平行移動
+        </p>
+        <p className="text-white/60 text-xs font-mono">
+          build {__GIT_SHA__}
+          {current ? ` / ${current.pose} data #${goldenDataHash(current)}` : ""}
         </p>
         {status === "loading" && (
           <p className="text-white/80 text-sm">3Dモデルを読み込み中...</p>

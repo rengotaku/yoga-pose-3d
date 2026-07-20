@@ -279,13 +279,16 @@ export const PoseViewer3D: React.FC = () => {
             exportRotations: () => exportWorldRotations(mannequin),
             checkGolden: (golden: GoldenPose) => {
               // ゴールデン品質の定量指標（#84）: ROM 違反 + 自己めり込み。
-              // 呼び出し後はゴールデンが表示されたままになる
+              // 呼び出し後はゴールデンが表示されたままになる。カメラ再フィット
+              // しないと接地後のマネキンがフレーム外に残り、指標A のレンダー
+              // 再推定が検出不能になる（#88）
               const unresolved = applyGoldenRotations(
                 mannequin,
                 initialQuaternionsRef.current,
                 golden
               );
               groundMannequin(mannequin, FLOOR_Y);
+              fitCameraToSkeleton();
               const rom = checkGoldenRom(golden);
               const penetrations = detectSelfPenetrations(buildBodyCapsules(mannequin));
               return { rom, penetrations, unresolved };

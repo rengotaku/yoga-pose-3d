@@ -34,6 +34,14 @@ const sources = existsSync(sourcesPath)
   ? JSON.parse(readFileSync(sourcesPath, "utf8"))
   : {};
 
+/**
+ * 指標A の合否しきい値（度・経験値）。推定器がマネキンレンダーを読む際の
+ * ノイズ（体型差・簡素な質感）を考慮して写真同士より緩く設定。根拠と
+ * 調整履歴は #88 参照。
+ */
+const A_MEAN_MAX_DEG = 20;
+const A_SEG_MAX_DEG = 35;
+
 const res = await fetch(baseUrl).catch(() => null);
 if (!res || !res.ok) {
   console.error(`dev server not reachable at ${baseUrl} — run \`make run\` first`);
@@ -97,20 +105,13 @@ for (const pose of poses) {
     }
   }
 
-  // 指標A: レンダー再推定 vs 実写真（レポートのみ）
+  // 指標A: レンダー再推定 vs 実写真。
+  // 単一視点では自己遮蔽でセグメントが除外されやすいため（四つ這いの正面等）、
+  // 複数視点のレンダーを推定し、セグメント単位でマージする（比較数が多い
+  // 視点を優先し、そこで除外されたセグメントだけ他視点で補完）
   const photoPath = sources[pose];
   if (!photoPath || !existsSync(photoPath)) {
     console.log("  写真整合:   skip（実写真パス未設定）");
-    continue;
-  }
-  const shotPath = join(shotDir, `${pose}.png`);
-  await page.evaluate(() => window.__poseDebug.setView(0, 10));
-  await page.waitForTimeout(300);
-  await page.locator("canvas[data-engine]").screenshot({ path: shotPath });
-
-  const renderLm = await landmarksForImage(shotPath);
-  if (!renderLm) {
-    console.log("  写真整合:   検出不能（マネキンレンダーで推定器が人物検出せず）");
     continue;
   }
   const photoLm = await landmarksForImage(photoPath);
@@ -118,14 +119,81 @@ for (const pose of poses) {
     console.log("  写真整合:   検出不能（実写真で推定器が人物検出せず）");
     continue;
   }
-  const match = await page.evaluate(
-    ([a, b]) => window.__poseDebug.compareLandmarks(a, b),
-    [renderLm, photoLm]
+
+  const VIEWS = [
+    { name: "front", az: 0, el: 10 },
+    { name: "side", az: 90, el: 10 },
+    { name: "side2", az: -90, el: 10 },
+  ];
+  const viewMatches = [];
+  for (const view of VIEWS) {
+    // 適用ポーズがフレーム内に来るよう checkGolden（カメラ再フィット込み）を
+    // 再実行してから撮る。landmarksForImage が別ページへ遷移するため毎回必要
+    await page.goto(baseUrl, { waitUntil: "domcontentloaded" });
+    await page.getByRole("button", { name: /3Dマネキン/ }).click();
+    await page.waitForFunction(() => Boolean(window.__poseDebug), { timeout: 30_000 });
+    await page.evaluate((g) => window.__poseDebug.checkGolden(g), golden);
+    await page.evaluate(([az, el]) => window.__poseDebug.setView(az, el), [
+      view.az,
+      view.el,
+    ]);
+    // 画像未アップロード時のプレースホルダ（半透明ベール）がキャンバスを覆い、
+    // ベール越しのスクショでは推定器が人物検出できない（#88 の主因のひとつ）
+    await page.evaluate(() => {
+      for (const el of document.querySelectorAll("div, p, span")) {
+        if (
+          el.childElementCount === 0 &&
+          el.textContent?.includes("画像をアップロードすると")
+        ) {
+          el.style.display = "none";
+          if (el.parentElement) el.parentElement.style.display = "none";
+        }
+      }
+    });
+    await page.waitForTimeout(300);
+    const shotPath = join(shotDir, `${pose}-${view.name}.png`);
+    await page.locator("canvas[data-engine]").screenshot({ path: shotPath });
+    const renderLm = await landmarksForImage(shotPath);
+    if (!renderLm) continue;
+    const match = await page.evaluate(
+      ([a, b]) => window.__poseDebug.compareLandmarks(a, b),
+      [renderLm, photoLm]
+    );
+    viewMatches.push({ view: view.name, match });
+  }
+
+  if (viewMatches.length === 0) {
+    console.log("  写真整合:   検出不能（全視点でマネキンレンダーの人物検出に失敗）");
+    continue;
+  }
+
+  // マージ: 比較セグメント数の多い視点を優先し、足りない分を他視点で補完
+  viewMatches.sort((a, b) => b.match.segments.length - a.match.segments.length);
+  const merged = new Map();
+  const segSource = new Map();
+  for (const { view, match } of viewMatches) {
+    for (const s of match.segments) {
+      if (!merged.has(s.segment)) {
+        merged.set(s.segment, s);
+        segSource.set(s.segment, view);
+      }
+    }
+  }
+  const segs = Array.from(merged.values());
+  const meanDeg = segs.reduce((s, m) => s + m.angleDeg, 0) / segs.length;
+  const over = segs.filter((s) => s.angleDeg > A_SEG_MAX_DEG);
+  const aFail = meanDeg > A_MEAN_MAX_DEG || over.length > 0;
+  if (aFail) violation = true;
+  console.log(
+    `  写真整合:   平均角度差 ${meanDeg.toFixed(1)}°（合格: 平均≦${A_MEAN_MAX_DEG}° かつ 各≦${A_SEG_MAX_DEG}°） -> ${aFail ? "違反" : "合格"}（比較 ${segs.length}/9）`
   );
-  const mean = match.meanDeg === null ? "n/a" : `${match.meanDeg.toFixed(1)}°`;
-  console.log(`  写真整合:   平均角度差 ${mean}（比較 ${match.segments.length} / 除外 ${match.skipped.length}: ${match.skipped.join(",") || "なし"}）`);
-  for (const s of match.segments.sort((x, y) => y.angleDeg - x.angleDeg)) {
-    console.log(`    ${s.segment.padEnd(11)} ${s.angleDeg.toFixed(1)}°`);
+  for (const s of segs.sort((x, y) => y.angleDeg - x.angleDeg)) {
+    const dir = process.env.VERBOSE
+      ? `  render[${s.dirA.map((v) => v.toFixed(2)).join(",")}] photo[${s.dirB.map((v) => v.toFixed(2)).join(",")}]`
+      : "";
+    console.log(
+      `    ${s.segment.padEnd(11)} ${s.angleDeg.toFixed(1).padStart(6)}° (${segSource.get(s.segment)})${dir}`
+    );
   }
 }
 
