@@ -151,6 +151,75 @@ describe("scorePose", () => {
     expect(score.missing).toEqual(["LeftHand"]);
     expect(score.total).toBeCloseTo(100, 6);
   });
+
+  it("splits a swing-only offset into swing/twist subscores when childDirs is given (#102)", () => {
+    const golden = allIdentity();
+    const actual = allIdentity();
+    // Spine の子方向 (0,1,0) に対して垂直軸まわりに 90° = 純粋 swing、twist は 0°
+    const swing90 = new THREE.Quaternion().setFromAxisAngle(
+      new THREE.Vector3(1, 0, 0),
+      Math.PI / 2
+    );
+    actual.Spine = [swing90.x, swing90.y, swing90.z, swing90.w];
+    const childDirs: Record<string, [number, number, number]> = { Spine: [0, 1, 0] };
+
+    const score = scorePose(golden, actual, childDirs);
+
+    expect(score.total).toBeLessThan(100);
+    expect(score.joints.Spine.swingDeg!).toBeCloseTo(90, 1);
+    expect(score.joints.Spine.twistDeg!).toBeCloseTo(0, 1);
+    expect(score.summary.swingAvg).toBeCloseTo(0, 6);
+    expect(score.summary.twistAvg).toBeCloseTo(1, 6);
+    expect(score.summary.swingScored).toBe(1);
+    expect(score.summary.swingWeight).toBe(SCORE_BONE_WEIGHTS.Spine);
+    expect(score.summary.twistScored).toBe(1);
+  });
+
+  it("leaves swing/twist null when childDirs is not provided", () => {
+    const golden = allIdentity();
+    const actual = allIdentity();
+    const pitch90 = new THREE.Quaternion().setFromEuler(
+      new THREE.Euler(Math.PI / 2, 0, 0)
+    );
+    actual.Hips = [pitch90.x, pitch90.y, pitch90.z, pitch90.w];
+
+    const score = scorePose(golden, actual);
+
+    expect(score.joints.Hips.swingDeg).toBeNull();
+    expect(score.joints.Hips.twistDeg).toBeNull();
+    expect(score.joints.Hips.swingScore).toBeNull();
+    expect(score.joints.Hips.twistScore).toBeNull();
+    expect(score.summary.swingAvg).toBeNull();
+    expect(score.summary.twistAvg).toBeNull();
+    expect(score.summary.swingScored).toBe(0);
+    expect(score.summary.swingWeight).toBe(0);
+    expect(score.summary.twistScored).toBe(0);
+    expect(score.summary.twistWeight).toBe(0);
+  });
+
+  it("reports coverage ratio as scored / (scored + missing)", () => {
+    const golden = allIdentity();
+    const actual = allIdentity();
+    const allNames = Object.keys(SCORE_BONE_WEIGHTS);
+    expect(allNames.length).toBe(15);
+    // 15 関節中 7 関節を欠損させ、8 関節だけスコア対象に残す
+    for (const name of allNames.slice(8)) {
+      delete actual[name];
+    }
+
+    const score = scorePose(golden, actual);
+
+    expect(score.summary.coverage.scored).toBe(8);
+    expect(score.summary.coverage.missing).toBe(7);
+    expect(score.summary.coverage.ratio).toBeCloseTo(8 / 15, 6);
+  });
+
+  it("returns identical p10/median/min when every joint scores the same", () => {
+    const score = scorePose(allIdentity(), allIdentity());
+    expect(score.stats.p10).toBeCloseTo(1, 6);
+    expect(score.stats.median).toBeCloseTo(1, 6);
+    expect(score.stats.min).toBeCloseTo(1, 6);
+  });
 });
 
 describe("exportBoneChildDirs", () => {

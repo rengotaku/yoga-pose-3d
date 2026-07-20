@@ -31,6 +31,14 @@ export type JointScore = {
   angleDeg: number;
   score: number;
   weight: number;
+  /** ボーン方向（子方向）のズレ角。childDirs 未対応の関節は null（#102） */
+  swingDeg: number | null;
+  /** swing を除いた残差（≒ボーン軸まわりツイスト）。childDirs 未対応の関節は null（#102） */
+  twistDeg: number | null;
+  /** swingDeg を ANGLE_FOR_ZERO_SCORE で線形換算したスコア。childDirs 未対応の関節は null（#102） */
+  swingScore: number | null;
+  /** twistDeg を ANGLE_FOR_ZERO_SCORE で線形換算したスコア。childDirs 未対応の関節は null（#102） */
+  twistScore: number | null;
 };
 
 export type PoseScore = {
@@ -39,6 +47,38 @@ export type PoseScore = {
   joints: Record<string, JointScore>;
   /** golden/actual のどちらかで解決できずスコア対象外になったボーン */
   missing: string[];
+  /**
+   * サマリ（#102）。swingAvg/twistAvg は childDirs 対応の関節に限定した
+   * 重み付き平均スコア（0〜1、1 が満点）。対応関節が 0 件なら null。
+   * pose 間で対象集合が変わりうるため、比較時は swingScored / swingWeight
+   * （twistScored / twistWeight）が同一かも確認する必要がある。
+   */
+  summary: {
+    swingAvg: number | null;
+    twistAvg: number | null;
+    /** swingAvg に採用した関節数（childDirs が定義された関節数） */
+    swingScored: number;
+    /** swingAvg の分母に使った総重み */
+    swingWeight: number;
+    /** twistAvg に採用した関節数 */
+    twistScored: number;
+    /** twistAvg の分母に使った総重み */
+    twistWeight: number;
+    coverage: {
+      /** joints に採点として入った関節数 */
+      scored: number;
+      /** golden/actual どちらかが欠損してスコア対象外になった関節数 */
+      missing: number;
+      /** scored / (scored + missing) */
+      ratio: number;
+    };
+  };
+  /** 関節スコア（0〜1）の分位点。関節数 <2 の場合は total/100 で埋める */
+  stats: {
+    p10: number;
+    median: number;
+    min: number;
+  };
 };
 
 /**
@@ -247,19 +287,60 @@ export const computeYawAlignment = (
 };
 
 /**
+ * 関節スコア（0〜1）の分位点を線形補間で求める（#102）。
+ * 関節数が 2 未満の場合は total（0〜100）から換算した値で全項目を埋める。
+ */
+const computeStats = (
+  joints: Record<string, JointScore>,
+  total: number
+): PoseScore["stats"] => {
+  const scores = Object.values(joints)
+    .map((j) => j.score)
+    .sort((a, b) => a - b);
+
+  if (scores.length < 2) {
+    const fallback = total / 100;
+    return { p10: fallback, median: fallback, min: fallback };
+  }
+
+  const quantile = (p: number): number => {
+    const idx = (p / 100) * (scores.length - 1);
+    const lower = Math.floor(idx);
+    const upper = Math.ceil(idx);
+    if (lower === upper) return scores[lower];
+    const frac = idx - lower;
+    return scores[lower] * (1 - frac) + scores[upper] * frac;
+  };
+
+  return { p10: quantile(10), median: quantile(50), min: scores[0] };
+};
+
+/**
  * パイプライン出力（actual）とゴールデン（golden）の world 回転からスコアを
  * 算出する。actual は Hips 基準のヨー正規化（#76）を掛けてから比較する。
  * 関節スコア = max(0, 1 - 角度差/90°)、総合 = 重み付き平均 × 100。
+ *
+ * childDirs（#82 diagnosePose の入力・#102 で任意化）を渡すと、関節ごとの
+ * swing/twist 角度・スコアと summary.swingAvg/twistAvg も算出する。未指定の
+ * 場合は swing/twist 系はすべて null になる（総合スコア `total` は不変）。
  */
 export const scorePose = (
   golden: Record<string, QuatTuple>,
-  actual: Record<string, QuatTuple>
+  actual: Record<string, QuatTuple>,
+  childDirs?: Record<string, [number, number, number]>
 ): PoseScore => {
   const joints: Record<string, JointScore> = {};
   const missing: string[] = [];
   let weightedSum = 0;
   let weightTotal = 0;
+  let swingWeightedSum = 0;
+  let swingWeightTotal = 0;
+  let swingScored = 0;
+  let twistWeightedSum = 0;
+  let twistWeightTotal = 0;
+  let twistScored = 0;
   const yaw = computeYawAlignment(golden, actual);
+  const diag = childDirs ? diagnosePose(golden, actual, childDirs) : undefined;
 
   for (const [stdName, weight] of Object.entries(SCORE_BONE_WEIGHTS)) {
     const g = golden[stdName];
@@ -273,14 +354,60 @@ export const scorePose = (
       .multiply(new THREE.Quaternion(a[0], a[1], a[2], a[3]).normalize());
     const angleDeg = quaternionAngleDeg(g, [aligned.x, aligned.y, aligned.z, aligned.w]);
     const score = Math.max(0, 1 - angleDeg / ANGLE_FOR_ZERO_SCORE);
-    joints[stdName] = { angleDeg, score, weight };
+
+    const d = diag?.[stdName];
+    const swingDeg = d?.swingDeg ?? null;
+    const twistDeg = d?.twistDeg ?? null;
+    const swingScore =
+      swingDeg == null ? null : Math.max(0, 1 - swingDeg / ANGLE_FOR_ZERO_SCORE);
+    const twistScore =
+      twistDeg == null ? null : Math.max(0, 1 - twistDeg / ANGLE_FOR_ZERO_SCORE);
+
+    joints[stdName] = {
+      angleDeg,
+      score,
+      weight,
+      swingDeg,
+      twistDeg,
+      swingScore,
+      twistScore,
+    };
     weightedSum += score * weight;
     weightTotal += weight;
+    if (swingScore != null) {
+      swingWeightedSum += swingScore * weight;
+      swingWeightTotal += weight;
+      swingScored += 1;
+    }
+    if (twistScore != null) {
+      twistWeightedSum += twistScore * weight;
+      twistWeightTotal += weight;
+      twistScored += 1;
+    }
   }
 
+  const total = weightTotal > 0 ? (weightedSum / weightTotal) * 100 : 0;
+  const scoredCount = Object.keys(joints).length;
+  const missingCount = missing.length;
+
   return {
-    total: weightTotal > 0 ? (weightedSum / weightTotal) * 100 : 0,
+    total,
     joints,
     missing,
+    summary: {
+      swingAvg: swingWeightTotal > 0 ? swingWeightedSum / swingWeightTotal : null,
+      twistAvg: twistWeightTotal > 0 ? twistWeightedSum / twistWeightTotal : null,
+      swingScored,
+      swingWeight: swingWeightTotal,
+      twistScored,
+      twistWeight: twistWeightTotal,
+      coverage: {
+        scored: scoredCount,
+        missing: missingCount,
+        ratio:
+          scoredCount + missingCount > 0 ? scoredCount / (scoredCount + missingCount) : 0,
+      },
+    },
+    stats: computeStats(joints, total),
   };
 };

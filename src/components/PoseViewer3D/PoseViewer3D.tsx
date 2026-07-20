@@ -337,12 +337,14 @@ export const PoseViewer3D: React.FC = () => {
             },
             scoreGolden: (golden: GoldenPose) => {
               // 現在のポーズ（パイプライン出力）を先に採取してからゴールデンを
-              // 適用する。呼び出し後はゴールデンが表示されたままになる
+              // 適用する。呼び出し後はゴールデンが表示されたままになる。
+              // childDirs も渡し、swing/twist/summary/stats を含む PoseScore を返す（#102）
               const actual = exportWorldRotations(mannequin);
+              const childDirs = exportBoneChildDirs(mannequin);
               applyGoldenRotations(mannequin, initialQuaternionsRef.current, golden);
               groundMannequin(mannequin, FLOOR_Y);
               const goldenQ = exportWorldRotations(mannequin);
-              return scorePose(goldenQ, actual);
+              return scorePose(goldenQ, actual, childDirs);
             },
             diagGolden: (golden: GoldenPose) => {
               // scoreGolden と同じ手順で採取し、角度差を swing/twist に分解して

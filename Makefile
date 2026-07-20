@@ -82,12 +82,16 @@ golden-render:
 	node e2e/golden-render.mjs
 
 ## pose-score: 実写真のパイプライン出力とゴールデンの角度差からスコアを算出（要: make run 起動済み + e2e/golden/sources.local.json）
+##   POSE=<id>          単一ポーズのみ集計
+##   JSON=<path>        機械可読出力を <path> に書き出す（内訳・分位点を含む。#102）
 pose-score:
-	node e2e/pose-score.mjs
+	node e2e/pose-score.mjs $(if $(JSON),--json $(JSON))
 
 ## golden-check: ゴールデン品質の定量指標（ROM/めり込み/写真整合）を出力（要: make run 起動済み。POSE=<id> で単一）
+##   POSE=<id>          単一ポーズのみ検査
+##   JSON=<path>        機械可読出力を <path> に書き出す（#102）
 golden-check:
-	node e2e/golden-check.mjs
+	node e2e/golden-check.mjs $(if $(JSON),--json $(JSON))
 
 ## check: Run lint + test
 check: lint test
