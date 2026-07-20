@@ -12,6 +12,23 @@ import {
   type QuatTuple,
 } from "./golden";
 
+/**
+ * e2e/golden/<name>.json を実データとして読み込み GoldenPose として扱う（#104）。
+ * Vite の import.meta.glob 経由で読む（node:fs は tsconfig.app.json の
+ * "types" に "node" が含まれず tsc -b がエラーになるため使わない）。
+ */
+const GOLDEN_MODULES = import.meta.glob<{ default: GoldenPose }>(
+  "../../../e2e/golden/{tabletop,cross-seat,kneel-sidebend}.json",
+  { eager: true }
+);
+const loadGoldenJson = (name: string): GoldenPose => {
+  const entry = Object.entries(GOLDEN_MODULES).find(([path]) =>
+    path.endsWith(`/${name}.json`)
+  );
+  if (!entry) throw new Error(`golden json not found: ${name}`);
+  return entry[1].default;
+};
+
 /** UE 系命名の最小スケルトン（実 glb と同じ名前解決経路を通す） */
 const buildRig = () => {
   const root = new THREE.Group();
@@ -282,4 +299,26 @@ describe("diagnosePose", () => {
     expect(diag.Spine.swingDeg).toBeNull();
     expect(diag.Spine.twistDeg).toBeNull();
   });
+});
+
+describe("GoldenPose.tier (#104)", () => {
+  it("is optional and undefined when omitted", () => {
+    const golden: GoldenPose = { pose: "t", rotations: {} };
+    expect(golden.tier).toBeUndefined();
+  });
+
+  it("accepts both dev and holdout values", () => {
+    const dev: GoldenPose = { pose: "t", rotations: {}, tier: "dev" };
+    const holdout: GoldenPose = { pose: "t", rotations: {}, tier: "holdout" };
+    expect(dev.tier).toBe("dev");
+    expect(holdout.tier).toBe("holdout");
+  });
+
+  it.each(["tabletop", "cross-seat", "kneel-sidebend"])(
+    "marks the existing golden %s as tier dev",
+    (name) => {
+      const golden = loadGoldenJson(name);
+      expect(golden.tier).toBe("dev");
+    }
+  );
 });

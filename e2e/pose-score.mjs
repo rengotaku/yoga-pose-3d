@@ -9,6 +9,14 @@
  *   - サマリに swingAvg / twistAvg / coverage / p10 / median / min
  *   - --json <path> で機械可読出力（後段の hold-out 集計・分位点比較に使う）
  *
+ * #104 で以下を追加（過適合検出の下準備。数値目標や hold-out ポーズの追加は
+ * 対象外。詳細は ADR 0009）:
+ *   - ゴールデン JSON の tier（"dev" | "holdout"、未指定は "dev"）で集計を分離
+ *   - コンソール summary を dev/holdout で分割表示（片方が空ならセクション省略）
+ *   - --json 出力を schemaVersion 2 にバンプし、averageDev/averageHoldout/
+ *     resultsByTier を追加（旧 results は resultsByTier.dev.concat(holdout)
+ *     として後方互換維持）
+ *
  * 実写真は著作権配慮でリポジトリにコミットしないため、ローカルパスを
  * e2e/golden/sources.local.json（gitignore 済み）で指定する:
  *   { "tabletop": "/abs/path/to/photo.png", ... }
@@ -22,6 +30,17 @@ import { chromium } from "playwright";
 import { readFileSync, existsSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
+import { ALLOWED_TIERS } from "./lib/aggregate.mjs";
+
+/** golden.tier を厳格に正規化。未指定は "dev"、既知でない値は throw。 */
+const normalizeTier = (raw, pose) => {
+  if (raw === undefined) return "dev";
+  if (ALLOWED_TIERS.has(raw)) return raw;
+  throw new Error(
+    `unknown tier "${String(raw)}" in ${pose}.json: allowed values are ${[...ALLOWED_TIERS].join(", ")} or undefined`
+  );
+};
+import { aggregateTotals, splitByTier } from "./lib/aggregate.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const goldenDir = join(here, "golden");
@@ -79,6 +98,7 @@ for (const [pose, photoPath] of entries) {
   }
   try {
     const golden = JSON.parse(readFileSync(goldenPath, "utf8"));
+    const tier = normalizeTier(golden.tier, pose);
     await page.goto(baseUrl, { waitUntil: "domcontentloaded" });
     const chooserPromise = page.waitForEvent("filechooser");
     await page.getByText("クリックまたはドラッグ＆ドロップ").click();
@@ -95,7 +115,7 @@ for (const [pose, photoPath] of entries) {
     const twistN = score.summary?.twistScored ?? 0;
     const cov = score.summary?.coverage ?? { scored: 0, missing: 0, ratio: 0 };
     console.log(
-      `\n=== ${pose}: 総合 ${score.total.toFixed(1)}%  ` +
+      `\n=== ${pose} (${tier}): 総合 ${score.total.toFixed(1)}%  ` +
         `swing ${swingAvgPct}% (n=${swingN})  twist ${twistAvgPct}% (n=${twistN})  ` +
         `coverage ${cov.scored}/${cov.scored + cov.missing} ===`
     );
@@ -119,33 +139,42 @@ for (const [pose, photoPath] of entries) {
           `min ${(score.stats.min * 100).toFixed(1)}%`
       );
     }
-    totals.push({ pose, total: score.total });
-    jsonResults.push({ pose, score });
+    totals.push({ pose, tier, total: score.total });
+    jsonResults.push({ pose, tier, score });
   } catch (e) {
     failed = true;
     console.error(`fail: ${pose}: ${e}`);
   }
 }
 
-if (totals.length > 0) {
-  console.log("\n=== summary ===");
-  for (const t of totals) {
+const totalsAgg = aggregateTotals(totals);
+const printSummarySection = (label, items, avg) => {
+  console.log(`\n=== summary (${label}) ===`);
+  for (const t of items) {
     console.log(`  ${t.pose.padEnd(16)} ${t.total.toFixed(1)}%`);
   }
-  const avg = totals.reduce((s, t) => s + t.total, 0) / totals.length;
   console.log(`  ${"average".padEnd(16)} ${avg.toFixed(1)}%`);
+};
+if (totalsAgg.dev.length > 0) {
+  printSummarySection("dev", totalsAgg.dev, totalsAgg.averageDev);
+}
+if (totalsAgg.holdout.length > 0) {
+  printSummarySection("holdout", totalsAgg.holdout, totalsAgg.averageHoldout);
 }
 
 if (jsonPath && jsonResults.length > 0) {
-  const avg =
-    totals.length > 0 ? totals.reduce((s, t) => s + t.total, 0) / totals.length : 0;
+  const resultsByTier = splitByTier(jsonResults);
   writeFileSync(
     jsonPath,
     JSON.stringify(
       {
-        schemaVersion: 1,
-        average: avg,
-        results: jsonResults,
+        schemaVersion: 2,
+        average: totalsAgg.average ?? 0,
+        averageDev: totalsAgg.averageDev,
+        averageHoldout: totalsAgg.averageHoldout,
+        resultsByTier,
+        // 後方互換（schemaVersion 1）: resultsByTier.dev.concat(holdout) と同一
+        results: [...resultsByTier.dev, ...resultsByTier.holdout],
       },
       null,
       2

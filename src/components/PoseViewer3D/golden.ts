@@ -23,6 +23,14 @@ export type GoldenPose = {
    * 「指先立ち」でなく「手のひら接地」を保証する。値は "left" / "right"。
    */
   palmsDown?: ("left" | "right")[];
+  /**
+   * 過適合検出用の tier 分類（#104）。"dev" はパイプライン改善のチューニング
+   * 対象として使う既存ゴールデン、"holdout" は改善作業から隠して汎化確認に
+   * 使うゴールデン。未指定は "dev" として扱う（pose-score.mjs / golden-check.mjs
+   * の集計側で判定）。この型は tier の値域を定義するのみで、デフォルト解決は
+   * 呼び出し側（e2e/lib/aggregate.mjs 等）が行う。
+   */
+  tier?: "dev" | "holdout";
 };
 
 export type QuatTuple = [number, number, number, number];
