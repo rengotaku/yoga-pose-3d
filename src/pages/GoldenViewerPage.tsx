@@ -77,6 +77,11 @@ const markerColorFor = (stdName: string): number =>
   EDIT_MARKER_GROUPS.find((g) => g.pattern.test(stdName))?.color ??
   EDIT_MARKER_GROUPS[EDIT_MARKER_GROUPS.length - 1].color;
 const EDIT_MARKER_RADIUS = 0.025;
+/** 指ボーンは間隔が狭く 0.025 だと塊になるため小さい半径を使う */
+const EDIT_MARKER_FINGER_RADIUS = 0.008;
+/** 標準ボーン名が指（Thumb/Index/Middle/Ring/Pinky）かどうか */
+const isFingerBoneStdName = (stdName: string): boolean =>
+  /Thumb|Index|Middle|Ring|Pinky/.test(stdName);
 const EDIT_MARKER_OPACITY = 0.85;
 /** 選択中マーカーの点滅（ゆっくり）。完全には消さず 1.0↔0.5 をスムーズに振る */
 const EDIT_MARKER_BLINK_PERIOD_MS = 2000;
@@ -173,6 +178,8 @@ export function GoldenViewerPage() {
   const isDraggingRef = useRef(false);
   /** マーカー共有の SphereGeometry。アンマウント時に dispose するため ref で控える */
   const markerGeometryRef = useRef<THREE.SphereGeometry | null>(null);
+  /** 指マーカー共有の SphereGeometry（小径）。こちらも dispose するため ref で控える */
+  const fingerMarkerGeometryRef = useRef<THREE.SphereGeometry | null>(null);
 
   const [editMode, setEditMode] = useState(false);
   const [selectedBone, setSelectedBone] = useState<SelectedBone | null>(null);
@@ -379,13 +386,21 @@ export function GoldenViewerPage() {
         const boneNames = Array.from(boneMap.keys());
         const markerGeometry = new THREE.SphereGeometry(EDIT_MARKER_RADIUS, 12, 12);
         markerGeometryRef.current = markerGeometry;
+        // 指は関節間隔が狭く、通常サイズだと指先まで球の塊になるため小径の
+        // geometry を別に用意する（共有 geometry が2つになるので dispose も両方行う）
+        const fingerMarkerGeometry = new THREE.SphereGeometry(
+          EDIT_MARKER_FINGER_RADIUS,
+          8,
+          8
+        );
+        fingerMarkerGeometryRef.current = fingerMarkerGeometry;
         for (const stdName of Object.keys(BONE_ALIASES)) {
           const actualName = resolveBoneName(stdName, boneNames);
           const bone = actualName ? boneMap.get(actualName) : undefined;
           if (!bone || !actualName) continue;
           const baseColor = markerColorFor(stdName);
           const marker = new THREE.Mesh(
-            markerGeometry,
+            isFingerBoneStdName(stdName) ? fingerMarkerGeometry : markerGeometry,
             new THREE.MeshBasicMaterial({
               color: baseColor,
               transparent: true,
@@ -451,14 +466,16 @@ export function GoldenViewerPage() {
       transformControls.removeEventListener("dragging-changed", handleDraggingChanged);
       transformControls.removeEventListener("objectChange", handleObjectChange);
       transformControls.dispose();
-      // 関節マーカー（最大 ~20 個）の material と、共有 geometry を dispose する
-      // (SPA 再訪のたびに GPU リソースがリークするのを防ぐ)
+      // 関節マーカー（指込みで最大 ~50 個）の material と、共有 geometry（通常・指の
+      // 2 種類）を dispose する（SPA 再訪のたびに GPU リソースがリークするのを防ぐ）
       for (const marker of markerMeshesRef.current.values()) {
         marker.parent?.remove(marker);
         (marker.material as THREE.Material).dispose();
       }
       markerGeometryRef.current?.dispose();
       markerGeometryRef.current = null;
+      fingerMarkerGeometryRef.current?.dispose();
+      fingerMarkerGeometryRef.current = null;
       mount.removeChild(renderer.domElement);
       renderer.dispose();
       cameraRef.current = null;
