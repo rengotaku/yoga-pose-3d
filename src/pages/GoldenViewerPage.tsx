@@ -77,6 +77,10 @@ const markerColorFor = (stdName: string): number =>
   EDIT_MARKER_GROUPS[EDIT_MARKER_GROUPS.length - 1].color;
 const EDIT_MARKER_SELECTED_COLOR = 0xf59e0b;
 const EDIT_MARKER_RADIUS = 0.025;
+const EDIT_MARKER_OPACITY = 0.85;
+/** 選択中マーカーの点滅（ゆっくり）。opacity を正弦波で min↔通常の間で振る */
+const EDIT_MARKER_BLINK_PERIOD_MS = 2000;
+const EDIT_MARKER_BLINK_MIN_OPACITY = 0.15;
 
 /** ゲート再計算の debounce（#93 STEP3） */
 const GATE_DEBOUNCE_MS = 300;
@@ -139,6 +143,8 @@ export function GoldenViewerPage() {
   );
   /** 実ボーン名 → 選択マーカー Mesh */
   const markerMeshesRef = useRef<Map<string, THREE.Mesh>>(new Map());
+  /** 点滅対象（選択中マーカー）。animate ループから毎フレーム参照する */
+  const selectedMarkerRef = useRef<THREE.Mesh | null>(null);
   /** マウントエフェクト内のイベントハンドラから最新値を読むための ref（クロージャ陳腐化対策） */
   const editModeRef = useRef(false);
   const rotationsStateRef = useRef<Rotations>({});
@@ -333,7 +339,7 @@ export function GoldenViewerPage() {
             new THREE.MeshBasicMaterial({
               color: baseColor,
               transparent: true,
-              opacity: 0.85,
+              opacity: EDIT_MARKER_OPACITY,
               depthTest: false,
             })
           );
@@ -359,6 +365,16 @@ export function GoldenViewerPage() {
     const animate = () => {
       frameId = requestAnimationFrame(animate);
       controls.update();
+      // 選択中マーカーをゆっくり点滅させる（opacity を正弦波で振る）
+      const blinking = selectedMarkerRef.current;
+      if (blinking) {
+        const phase =
+          (performance.now() % EDIT_MARKER_BLINK_PERIOD_MS) / EDIT_MARKER_BLINK_PERIOD_MS;
+        const wave = 0.5 + 0.5 * Math.sin(phase * Math.PI * 2);
+        (blinking.material as THREE.MeshBasicMaterial).opacity =
+          EDIT_MARKER_BLINK_MIN_OPACITY +
+          (EDIT_MARKER_OPACITY - EDIT_MARKER_BLINK_MIN_OPACITY) * wave;
+      }
       renderer.render(scene, camera);
     };
     animate();
@@ -501,7 +517,12 @@ export function GoldenViewerPage() {
           ? EDIT_MARKER_SELECTED_COLOR
           : (marker.userData.baseColor as number)
       );
+      // 点滅途中で選択が外れた場合に備え、opacity を通常値へ戻す
+      material.opacity = EDIT_MARKER_OPACITY;
     }
+    selectedMarkerRef.current = selectedBone
+      ? (markerMeshesRef.current.get(selectedBone.actualName) ?? null)
+      : null;
   }, [selectedBone]);
 
   // ゲート再計算（#93 STEP3）: 編集値が確定するたびに 300ms debounce で再計算
