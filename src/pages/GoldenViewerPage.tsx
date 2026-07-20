@@ -41,17 +41,40 @@ const BUILD_SHA = typeof __GIT_SHA__ !== "undefined" ? __GIT_SHA__ : "dev";
 /** 床グリッドの Y 位置（PoseViewer3D と同値） */
 const FLOOR_Y = -1;
 
-/** 編集モード（#93）のボーンマーカー色・サイズ。色は部位系統ごとに分ける */
+/** 編集モード（#93）のボーンマーカー色・サイズ。腕・脚は左右でも色を分ける
+ *  （右=濃・左=淡。モデルが正面向きだと左右が鏡映になるため色で判別する） */
 const EDIT_MARKER_GROUPS = [
-  { key: "arm", label: "腕系", color: 0x38bdf8, pattern: /Shoulder|Arm|Hand/ },
-  { key: "leg", label: "脚系", color: 0x4ade80, pattern: /Leg|Foot|Toe/ },
+  {
+    key: "arm-r",
+    label: "右腕",
+    color: 0x2563eb,
+    pattern: /^Right(Shoulder|ForeArm|Arm|Hand)/,
+  },
+  {
+    key: "arm-l",
+    label: "左腕",
+    color: 0x7dd3fc,
+    pattern: /^Left(Shoulder|ForeArm|Arm|Hand)/,
+  },
+  {
+    key: "leg-r",
+    label: "右脚",
+    color: 0x16a34a,
+    pattern: /^Right(UpLeg|Leg|Foot|Toe)/,
+  },
+  {
+    key: "leg-l",
+    label: "左脚",
+    color: 0xa3e635,
+    pattern: /^Left(UpLeg|Leg|Foot|Toe)/,
+  },
   { key: "head", label: "頭・首", color: 0xf472b6, pattern: /Neck|Head/ },
   { key: "torso", label: "胴体系", color: 0xc084fc, pattern: /./ }, // Hips / Spine*
 ] as const;
 /** 標準ボーン名から部位系統色を引く（先頭一致優先。torso が包括デフォルト） */
 const markerColorFor = (stdName: string): number =>
   EDIT_MARKER_GROUPS.find((g) => g.pattern.test(stdName))?.color ??
-  EDIT_MARKER_GROUPS[3].color;
+  EDIT_MARKER_GROUPS[EDIT_MARKER_GROUPS.length - 1].color;
 const EDIT_MARKER_SELECTED_COLOR = 0xf59e0b;
 const EDIT_MARKER_RADIUS = 0.025;
 
