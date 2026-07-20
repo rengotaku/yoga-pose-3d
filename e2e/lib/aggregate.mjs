@@ -7,10 +7,15 @@
  * 分けて平均を出し、過学習の有無を dev/holdout の乖離で確認できるようにする。
  */
 
+/** GoldenPose.tier で許可された値の集合（ADR 0009）。 */
+export const ALLOWED_TIERS = new Set(["dev", "holdout"]);
+
 /**
  * `tier` フィールド（"dev" | "holdout" | undefined）を持つ配列を
- * dev / holdout に振り分ける。未指定は "dev" 扱い（GoldenPose のデフォルトと同一）。
- * @template {{ tier?: "dev" | "holdout" }} T
+ * dev / holdout に振り分ける。**未指定のみ "dev" 扱い**。既知でない値
+ * （"holdot" のような typo・大文字・その他）は throw して黙認しない。
+ * 黙って dev に落とすと過適合検出の役割そのものが壊れるため（ADR 0009）。
+ * @template {{ pose?: string, tier?: "dev" | "holdout" }} T
  * @param {T[]} items
  * @returns {{ dev: T[], holdout: T[] }}
  */
@@ -18,10 +23,15 @@ export const splitByTier = (items) => {
   const dev = [];
   const holdout = [];
   for (const item of items) {
-    if (item.tier === "holdout") {
+    if (item.tier === undefined || item.tier === "dev") {
+      dev.push(item);
+    } else if (item.tier === "holdout") {
       holdout.push(item);
     } else {
-      dev.push(item);
+      const label = item.pose ? ` (pose="${item.pose}")` : "";
+      throw new Error(
+        `unknown tier "${String(item.tier)}"${label}: allowed values are ${[...ALLOWED_TIERS].join(", ")} or undefined`
+      );
     }
   }
   return { dev, holdout };

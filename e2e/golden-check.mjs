@@ -19,6 +19,16 @@ import { readdirSync, readFileSync, existsSync, mkdtempSync, writeFileSync } fro
 import { fileURLToPath } from "node:url";
 import { dirname, join, basename } from "node:path";
 import { tmpdir } from "node:os";
+import { ALLOWED_TIERS } from "./lib/aggregate.mjs";
+
+/** golden.tier を厳格に正規化。未指定は "dev"、既知でない値は throw。 */
+const normalizeTier = (raw, pose) => {
+  if (raw === undefined) return "dev";
+  if (ALLOWED_TIERS.has(raw)) return raw;
+  throw new Error(
+    `unknown tier "${String(raw)}" in ${pose}.json: allowed values are ${[...ALLOWED_TIERS].join(", ")} or undefined`
+  );
+};
 
 const here = dirname(fileURLToPath(import.meta.url));
 const goldenDir = join(here, "golden");
@@ -110,7 +120,7 @@ for (const pose of poses) {
     continue;
   }
   const golden = JSON.parse(readFileSync(goldenPath, "utf8"));
-  const tier = golden.tier === "holdout" ? "holdout" : "dev";
+  const tier = normalizeTier(golden.tier, pose);
   console.log(`\n=== ${pose} (${tier}) ===`);
   const result = {
     pose,

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { splitByTier, averageOf, aggregateTotals } from "./aggregate.mjs";
+import { splitByTier, averageOf, aggregateTotals, ALLOWED_TIERS } from "./aggregate.mjs";
 
 describe("splitByTier", () => {
   it("treats an unspecified tier as dev", () => {
@@ -16,6 +16,17 @@ describe("splitByTier", () => {
     const { dev, holdout } = splitByTier(items);
     expect(dev).toEqual([items[0]]);
     expect(holdout).toEqual([items[1]]);
+  });
+
+  it("throws on unknown tier values (typo, wrong case, etc.)", () => {
+    // "holdot" のような typo が黙って dev 扱いになると過適合検出の
+    // 意味が壊れるため、厳格に throw する（ADR 0009）
+    expect(() => splitByTier([{ pose: "typo-pose", tier: "holdot" }])).toThrow(
+      /unknown tier/
+    );
+    expect(() => splitByTier([{ tier: "Dev" }])).toThrow(/unknown tier/);
+    expect(ALLOWED_TIERS.has("dev")).toBe(true);
+    expect(ALLOWED_TIERS.has("holdout")).toBe(true);
   });
 });
 
@@ -70,5 +81,30 @@ describe("aggregateTotals", () => {
     expect(agg.average).toBeCloseTo((40 + 60 + 20) / 3, 6);
     // 過学習検出の実運用シナリオ: dev が holdout より著しく高ければ乖離が見える
     expect(agg.averageDev - agg.averageHoldout).toBeCloseTo(30, 6);
+  });
+
+  it("旧 results との後方互換契約: dev → holdout の連結と一致し順序が保存される", () => {
+    // pose-score.mjs は schemaVersion 2 で resultsByTier を出しつつ、
+    // schemaVersion 1 の consumer 向けに旧 `results` を残す（ADR 0009）。
+    // 契約: `results === resultsByTier.dev.concat(resultsByTier.holdout)`
+    // を集計側で機械的に維持できることを固定する。
+    const totals = [
+      { pose: "tabletop", tier: "dev", total: 40 },
+      { pose: "new-pose", tier: "holdout", total: 20 },
+      { pose: "cross-seat", tier: "dev", total: 60 },
+      { pose: "hold-b", tier: "holdout", total: 30 },
+    ];
+    const agg = aggregateTotals(totals);
+    const legacyResults = agg.dev.concat(agg.holdout);
+    // dev は入力順で並び、その後 holdout が入力順で続く（過適合分析で
+    // 「同じ pose の dev/holdout ペアを追う」ため順序を壊さない）
+    expect(agg.dev.map((t) => t.pose)).toEqual(["tabletop", "cross-seat"]);
+    expect(agg.holdout.map((t) => t.pose)).toEqual(["new-pose", "hold-b"]);
+    expect(legacyResults.map((t) => t.pose)).toEqual([
+      "tabletop",
+      "cross-seat",
+      "new-pose",
+      "hold-b",
+    ]);
   });
 });

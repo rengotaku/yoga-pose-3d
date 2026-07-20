@@ -25,15 +25,86 @@
 
 ## hold-out ポーズを追加する手順
 
-1. 新しいポーズの実写真を用意し、ローカルパスを `sources.local.json` に追記する
-   （リポジトリにはコミットしない）
-2. `e2e/golden/<pose>.json` を新規作成し、**`"tier": "holdout"` を明示する**
-3. 手付けのボーン回転を作成する（写真とレンダーの目視比較ループ。既存ゴールデンの
-   `rotations` / `contacts` / `palmsDown` を参考にする）
-4. `make pose-score` を実行し、コンソール出力に `=== summary (holdout) ===`
-   セクションが出ることを確認する
-5. `make golden-check` で ROM / めり込み / 接地 / 手のひら向き / 写真整合の
-   合格を確認する（合格基準は ADR 0008 参照）
+### 命名規則
+
+- ファイル名は `<pose>.json`（kebab-case、英小文字）。命名は「体位＋特徴」の
+  組み合わせで検索性を確保する（例: `standing-tree`、`seated-twist-right`、
+  `plank-side`、`fold-forward`）。ID 番号や日付は付けない。
+- `_` で始まる名前はサンプル・除外扱い（`_sample.json` は `goldenPoses.ts`
+  の除外規則と `golden-check.mjs` のポーズ列挙対象外）。
+
+### JSON の最小例（hold-out）
+
+```jsonc
+{
+  "pose": "standing-tree",
+  "description": "立位・木のポーズ（片脚立ち、足裏を反対脚の内腿に当て、両手は胸前合掌）",
+  "tier": "holdout",
+  "rotations": {
+    "Hips":        [0, 0, 0],
+    "Spine":       [0, 0, 0],
+    "LeftUpLeg":   [90, 0, 20],
+    "LeftLeg":     [-140, 0, 0],
+    "RightUpLeg":  [0, 0, 0],
+    "RightLeg":    [0, 0, 0]
+    // ... 他のボーンは省略（未指定はバインドポーズ）
+  },
+  "contacts": ["foot:R"],
+  "palmsDown": []
+}
+```
+
+`rotations` は mixamorig 標準名（`src/components/PoseViewer3D/retarget.ts` の
+`BONE_ALIASES` のキー）で、バインドポーズからの相対 Euler（XYZ オーダー、度）。
+
+### 手順
+
+1. **実写真を用意**し、ローカル絶対パスを `sources.local.json` に追記する
+   （リポジトリにはコミットしない。gitignore 済み）:
+
+   ```jsonc
+   {
+     "tabletop": "/home/user/Pictures/tabletop.png",
+     "cross-seat": "/home/user/Pictures/cross-seat.png",
+     "kneel-sidebend": "/home/user/Pictures/kneel.png",
+     "standing-tree": "/home/user/Pictures/tree.png"   // ← 追加
+   }
+   ```
+
+2. **`e2e/golden/<pose>.json` を新規作成**し、上記の最小例に沿って
+   **`"tier": "holdout"` を明示**する。`tier` を省略すると `dev` 扱いになり、
+   過適合検出の意味が壊れるため必ず明示する（`e2e/lib/aggregate.mjs` の
+   `splitByTier` は "dev" / "holdout" 以外の値を throw する）。
+
+3. **手付けのボーン回転を作成**する（写真とレンダーの目視比較ループ）:
+
+   ```bash
+   make run          # 別ターミナルで dev サーバ起動
+   # ブラウザで /golden にアクセスし、対象 pose を選んでスライダー/ギズモで調整
+   # 完了したら export ボタンで <pose>.json を上書き保存する
+   ```
+
+4. **単一ポーズで pose-score を確認**する（`POSE=<pose>` で対象を絞る）:
+
+   ```bash
+   make pose-score POSE=standing-tree               # 表示のみ
+   make pose-score POSE=standing-tree JSON=/tmp/x.json   # JSON も併記
+   ```
+
+   コンソール出力に `=== summary (holdout) ===` セクションが出ることを確認
+   する（dev / holdout の混在時は両方のセクションが出る）。
+
+5. **`make golden-check` で品質ゲート**（ROM / めり込み / 接地 / 手のひら
+   向き / 写真整合）を確認する:
+
+   ```bash
+   make golden-check POSE=standing-tree
+   make golden-check POSE=standing-tree JSON=/tmp/y.json
+   ```
+
+   合格基準（coverage ≧ 4/9・系統 ≧ 2/5・平均角度差 ≦ 20°・各セグメント
+   ≦ 35°）は ADR 0008 参照。coverage ゲートで FAIL するようなら、
+   写真の撮影視点を変えるか、self-occlusion の少ない写真に差し替える。
 
 ## やってはいけないこと
 

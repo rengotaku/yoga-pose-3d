@@ -30,6 +30,16 @@ import { chromium } from "playwright";
 import { readFileSync, existsSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
+import { ALLOWED_TIERS } from "./lib/aggregate.mjs";
+
+/** golden.tier を厳格に正規化。未指定は "dev"、既知でない値は throw。 */
+const normalizeTier = (raw, pose) => {
+  if (raw === undefined) return "dev";
+  if (ALLOWED_TIERS.has(raw)) return raw;
+  throw new Error(
+    `unknown tier "${String(raw)}" in ${pose}.json: allowed values are ${[...ALLOWED_TIERS].join(", ")} or undefined`
+  );
+};
 import { aggregateTotals, splitByTier } from "./lib/aggregate.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -88,7 +98,7 @@ for (const [pose, photoPath] of entries) {
   }
   try {
     const golden = JSON.parse(readFileSync(goldenPath, "utf8"));
-    const tier = golden.tier === "holdout" ? "holdout" : "dev";
+    const tier = normalizeTier(golden.tier, pose);
     await page.goto(baseUrl, { waitUntil: "domcontentloaded" });
     const chooserPromise = page.waitForEvent("filechooser");
     await page.getByText("クリックまたはドラッグ＆ドロップ").click();

@@ -75,6 +75,23 @@ schema）だけを整備する。hold-out ポーズの実データ追加は別 s
   ため、**tier 分離が既存 dev 集計値を変えないことを保証する**（retrograde
   確認済み）。
 
+  **schemaVersion 互換の運用ポリシー**:
+
+  - schemaVersion 1 の consumer が `schemaVersion === 1` を厳密にチェックする実装は、
+    現行のリポジトリ内に存在しない（`--json` 出力は成果物であって内部 API ではなく、
+    schemaVersion チェックは書き手側の意図表明）。したがって旧 consumer が
+    「1 なら受理、2 なら拒否」で動いていても、今回の変更で壊れるのは Claude が
+    書いた過去スクリプト等の限られた範囲であり、それらは併せて更新する。
+  - **後方互換の実効的な担保**は「`results` フィールドを残す」1 点。旧 consumer は
+    `schemaVersion` を無視して `results` だけ読めば動く。この契約は
+    `e2e/lib/aggregate.test.mjs` で `results === resultsByTier.dev.concat(holdout)` の
+    順序保存も含めて機械的に固定する。
+  - **`results` フィールドの廃止条件**（未来の schemaVersion 3）は次のいずれかを
+    満たしたときに新 ADR で扱う: (a) `results` を参照している consumer が
+    リポジトリ内・ダッシュボード側とも 0 件になった、または (b) hold-out
+    ポーズ集合が 5 件以上に増え、dev + holdout を平坦に連結して読む用途が
+    実運用上ミスリーディングになる。それまで `results` は維持する。
+
 ### 4. `golden-check.mjs` は個別 tier タグのみ追加
 
 golden-check は「合格/不合格」を各ポーズ個別に判定する指標（ROM / めり込み /
@@ -110,8 +127,12 @@ hold-out ポーズでの「汎化 90%」という数値目標は本 ADR / sub-is
 
 ## 未解決事項
 
-- **schemaVersion のバンプ運用**: 本 ADR では「1 の後方互換（`results`）を
-  保ちつつ 2 を優先」とした。将来 `results` フィールドを廃止するタイミング
-  では新 ADR で扱う。
+- **`results` フィールド廃止（schemaVersion 3）のタイミング**: 上記「決定」節
+  の廃止条件 (a)(b) のどちらかを満たした時点で新 ADR を書く。それまで維持。
 - **hold-out の合格しきい値**: dev/holdout の乖離をどこまで許容するかは、
   実際に hold-out ポーズが追加されて計測値が出てから検討する。
+- **未知 tier 値の扱いは throw**: `"dev" | "holdout" | undefined` 以外は
+  `e2e/lib/aggregate.mjs` の `splitByTier` および `pose-score.mjs` /
+  `golden-check.mjs` の `normalizeTier` で throw する。`"holdot"` のような
+  typo を黙って `dev` に落とすと過適合検出の役割が壊れるため（Codex レビュー
+  指摘）。
