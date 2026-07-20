@@ -6,6 +6,10 @@
  * - 指標A: ゴールデンレンダーを MediaPipe に掛け直し、実写真の landmark と
  *   セグメント方向を比較（レポートのみ。実写真パスは sources.local.json）
  *
+ * #104 で `--json` 出力の各 result に `tier`（"dev" | "holdout"）を追加
+ * （schemaVersion 2）。個別ポーズの合否判定なので pose-score のような
+ * tier 別集計は行わない。
+ *
  * 前提: dev サーバ起動済み（ポートは PORT 環境変数、既定 5173）。
  * 実行: make golden-check   （POSE=<id> で単一ポーズのみ）
  * exit code: B の違反が 1 件でもあれば 1
@@ -106,9 +110,11 @@ for (const pose of poses) {
     continue;
   }
   const golden = JSON.parse(readFileSync(goldenPath, "utf8"));
-  console.log(`\n=== ${pose} ===`);
+  const tier = golden.tier === "holdout" ? "holdout" : "dev";
+  console.log(`\n=== ${pose} (${tier}) ===`);
   const result = {
     pose,
+    tier,
     rom: { violations: 0 },
     penetration: { violations: 0 },
     contact: { violations: 0, total: 0 },
@@ -325,8 +331,10 @@ for (const pose of poses) {
 if (jsonPath && jsonResults.length > 0) {
   writeFileSync(
     jsonPath,
+    // schemaVersion 2（#104）: 各 result に tier を追加。集計は加えない
+    // （golden-check は個別合否判定のため pose-score のような tier 別集計は不要）
     JSON.stringify(
-      { schemaVersion: 1, results: jsonResults, exitCode: violation ? 1 : 0 },
+      { schemaVersion: 2, results: jsonResults, exitCode: violation ? 1 : 0 },
       null,
       2
     )

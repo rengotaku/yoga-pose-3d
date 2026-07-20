@@ -86,3 +86,9 @@
   `make golden-check JSON=<path>` で機械可読出力。
 - **注意**: 実写真は著作権配慮で `e2e/golden/sources.local.json`（gitignore 済み）に
   ローカルパスを書く運用。CI では回さない。ローカルでの再計測前提。
+- **tier 分離（ADR 0009, #104）**: 各ゴールデン JSON に `tier: "dev" | "holdout"`
+  を持たせ、`pose-score` の集計を dev（チューニング対象）/ holdout（改善作業から
+  隠して汎化確認に使う）で分離する。既存 3 ポーズは全て `tier: "dev"`。
+  `--json` 出力は `schemaVersion: 2` で `averageDev / averageHoldout / resultsByTier`
+  を持つ（旧 `results` は後方互換で残る）。tier 別集計ロジックは
+  `e2e/lib/aggregate.mjs` に純粋関数として切り出してある。

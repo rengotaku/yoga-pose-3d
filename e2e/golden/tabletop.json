@@ -1,6 +1,7 @@
 {
   "pose": "tabletop",
   "description": "四つ這い（テーブルトップ）。手と膝で支持、背中フラット、腿と腕は鉛直",
+  "tier": "dev",
   "rotations": {
     "Hips": [
       88,
