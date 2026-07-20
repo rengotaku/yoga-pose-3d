@@ -17,9 +17,10 @@
 import { chromium } from "playwright";
 import { readdirSync, readFileSync, existsSync, mkdtempSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { dirname, join, basename, isAbsolute } from "node:path";
+import { dirname, join, isAbsolute } from "node:path";
 import { tmpdir } from "node:os";
 import { ALLOWED_TIERS } from "./lib/aggregate.mjs";
+import { listPoseIds } from "./lib/goldenPoses.mjs";
 
 /** golden.tier を厳格に正規化。未指定は "dev"、既知でない値は throw。 */
 const normalizeTier = (raw, pose) => {
@@ -42,12 +43,7 @@ const jsonPath =
 const positionals = cliArgs.filter((_, i) => i !== jsonFlagIdx && i !== jsonFlagIdx + 1);
 
 const poseArg = process.env.POSE ?? positionals[0];
-const poses = poseArg
-  ? [poseArg]
-  : readdirSync(goldenDir)
-      // "_" 始まりはサンプル（goldenPoses.ts の除外規則と同じ）
-      .filter((f) => f.endsWith(".json") && !f.includes(".local.") && !f.startsWith("_"))
-      .map((f) => basename(f, ".json"));
+const poses = poseArg ? [poseArg] : listPoseIds(readdirSync(goldenDir));
 
 /**
  * sources.json（committed）と sources.local.json（gitignore・ローカル上書き）を
