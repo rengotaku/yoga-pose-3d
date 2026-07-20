@@ -411,6 +411,10 @@ const hipYaw = (lm: RawLandmark[]): number | null => {
 export type SegmentMatch = {
   segment: string;
   angleDeg: number;
+  /** a 側（例: レンダー推定）のセグメント方向（three 空間・正規化済み） */
+  dirA: [number, number, number];
+  /** b 側（例: 実写真推定）のヨー整合後方向。修正の向きの手掛かりに使う */
+  dirB: [number, number, number];
 };
 
 export type LandmarkMatchResult = {
@@ -443,20 +447,11 @@ const segmentVisible = (lm: RawLandmark[], def: SegmentDef, min: number): boolea
   });
 };
 
-/**
- * 2 つの landmark 配列（例: ゴールデンレンダーの推定結果 vs 実写真の推定結果）
- * のセグメント方向を比較する（指標A）。b 側を hip line のヨー差で a に揃えて
- * から 3D 角度差を取る。visibility が低いセグメントは除外して skipped に載せる。
- */
-export const compareLandmarkPoses = (
+const compareWithYaw = (
   a: RawLandmark[],
-  b: RawLandmark[]
+  b: RawLandmark[],
+  yawDelta: number
 ): LandmarkMatchResult => {
-  const yawA = hipYaw(a);
-  const yawB = hipYaw(b);
-  // setFromAxisAngle(Y, ψ) は atan2(z,x) 基準の方位角を ψ だけ減らすため、
-  // b の方位角を a に揃える回転は ψ = yawB - yawA
-  const yawDelta = yawA !== null && yawB !== null ? yawB - yawA : 0;
   const yawQ = new THREE.Quaternion().setFromAxisAngle(
     new THREE.Vector3(0, 1, 0),
     yawDelta
@@ -482,6 +477,8 @@ export const compareLandmarkPoses = (
     segments.push({
       segment: def.name,
       angleDeg: THREE.MathUtils.radToDeg(da.angleTo(dbAligned)),
+      dirA: [da.x, da.y, da.z],
+      dirB: [dbAligned.x, dbAligned.y, dbAligned.z],
     });
   }
   const meanDeg =
@@ -489,4 +486,29 @@ export const compareLandmarkPoses = (
       ? segments.reduce((s, m) => s + m.angleDeg, 0) / segments.length
       : null;
   return { segments, meanDeg, skipped };
+};
+
+/**
+ * 2 つの landmark 配列（例: ゴールデンレンダーの推定結果 vs 実写真の推定結果）
+ * のセグメント方向を比較する（指標A）。b 側を hip line のヨー差で a に揃えて
+ * から 3D 角度差を取る。visibility が低いセグメントは除外して skipped に載せる。
+ *
+ * hip line は後ろ向き・強遮蔽の写真で向きを 180° 取り違えることがある
+ * （左右腰の混同）。ヨー整合を ψ と ψ+180° の両方で試し、平均角度差が
+ * 小さい方を採用して 2 値曖昧性を解消する（#88）。
+ */
+export const compareLandmarkPoses = (
+  a: RawLandmark[],
+  b: RawLandmark[]
+): LandmarkMatchResult => {
+  const yawA = hipYaw(a);
+  const yawB = hipYaw(b);
+  // setFromAxisAngle(Y, ψ) は atan2(z,x) 基準の方位角を ψ だけ減らすため、
+  // b の方位角を a に揃える回転は ψ = yawB - yawA
+  const yawDelta = yawA !== null && yawB !== null ? yawB - yawA : 0;
+  const r1 = compareWithYaw(a, b, yawDelta);
+  const r2 = compareWithYaw(a, b, yawDelta + Math.PI);
+  if (r1.meanDeg === null) return r2;
+  if (r2.meanDeg === null) return r1;
+  return r2.meanDeg < r1.meanDeg ? r2 : r1;
 };
