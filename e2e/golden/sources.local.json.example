@@ -1,5 +1,6 @@
 {
-  "kneel-sidebend": "/absolute/path/to/kneel-sidebend-photo.png",
-  "cross-seat": "/absolute/path/to/cross-seat-photo.png",
-  "tabletop": "/absolute/path/to/tabletop-photo.png"
+  "_note": "ADR 0010 以降、default の写真は e2e/golden/photos/<pose>.png に in-repo で配置されます。sources.local.json は「別マシンで絶対パスを指定したい」「実験用に別写真で試したい」時のエスケープハッチとして使う（sources.json と同キーがあればこちらが優先）。",
+  "kneel-sidebend": "/absolute/path/to/alternative-kneel-sidebend-photo.png",
+  "cross-seat": "/absolute/path/to/alternative-cross-seat-photo.png",
+  "tabletop": "/absolute/path/to/alternative-tabletop-photo.png"
 }

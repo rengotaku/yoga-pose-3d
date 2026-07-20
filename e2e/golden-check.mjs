@@ -4,7 +4,7 @@
  * - 指標B-1: 関節可動域（ROM）違反の列挙（合格 = 0 件）
  * - 指標B-2: 自己めり込み（カプセル近似）の列挙（合格 = 0 件）
  * - 指標A: ゴールデンレンダーを MediaPipe に掛け直し、実写真の landmark と
- *   セグメント方向を比較（レポートのみ。実写真パスは sources.local.json）
+ *   セグメント方向を比較（レポートのみ。実写真パスは sources.json / sources.local.json、ADR 0010）
  *
  * #104 で `--json` 出力の各 result に `tier`（"dev" | "holdout"）を追加
  * （schemaVersion 2）。個別ポーズの合否判定なので pose-score のような
@@ -17,7 +17,7 @@
 import { chromium } from "playwright";
 import { readdirSync, readFileSync, existsSync, mkdtempSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { dirname, join, basename } from "node:path";
+import { dirname, join, basename, isAbsolute } from "node:path";
 import { tmpdir } from "node:os";
 import { ALLOWED_TIERS } from "./lib/aggregate.mjs";
 
@@ -49,10 +49,25 @@ const poses = poseArg
       .filter((f) => f.endsWith(".json") && !f.includes(".local.") && !f.startsWith("_"))
       .map((f) => basename(f, ".json"));
 
-const sourcesPath = join(goldenDir, "sources.local.json");
-const sources = existsSync(sourcesPath)
-  ? JSON.parse(readFileSync(sourcesPath, "utf8"))
-  : {};
+/**
+ * sources.json（committed）と sources.local.json（gitignore・ローカル上書き）を
+ * マージして pose → 絶対パスの map を返す（ADR 0010）。相対パスは goldenDir 基準。
+ */
+const loadSources = () => {
+  const merged = {};
+  for (const name of ["sources.json", "sources.local.json"]) {
+    const p = join(goldenDir, name);
+    if (!existsSync(p)) continue;
+    const raw = JSON.parse(readFileSync(p, "utf8"));
+    for (const [pose, photo] of Object.entries(raw)) {
+      if (typeof photo !== "string") continue;
+      merged[pose] = isAbsolute(photo) ? photo : join(goldenDir, photo);
+    }
+  }
+  return merged;
+};
+
+const sources = loadSources();
 
 /**
  * 指標A の合否しきい値（度・経験値）。推定器がマネキンレンダーを読む際の

@@ -6,9 +6,15 @@
 ## ファイル構成
 
 - `<pose>.json`: ゴールデン本体（`GoldenPose` 型。`src/components/PoseViewer3D/golden.ts` 参照）
-- `sources.local.json`（gitignore 済み・**リポジトリにコミットしない**）: 実写真の
-  ローカル絶対パスを `{ "<pose>": "/abs/path/to/photo.png" }` で指定する
-- `sources.local.json.example`: 上記のテンプレート
+- `photos/<pose>.png`: 実写真（**committed**。ADR 0010 で in-repo 管理に移行、private repo 前提）
+- `sources.json`（committed）: pose → 写真パスの default 対応表（`./photos/<pose>.png` 参照）
+- `sources.local.json`（gitignore 済み・ローカル上書き用）: 別マシンでの絶対パス指定や、
+  実験用に別写真で試したい時のエスケープハッチ。同じ pose キーがあればこちらが優先される
+- `sources.local.json.example`: `sources.local.json` を書き起こす際のテンプレート
+
+参照優先順位: **`sources.local.json` が存在すれば優先**、無ければ `sources.json`。両方に
+同じ pose キーがあればローカル上書きが勝つ。相対パスは `e2e/golden/` 基準で解決される
+（`./photos/tabletop.png` → `e2e/golden/photos/tabletop.png`）。
 
 ## `tier` フィールド（#104, ADR 0009）
 
@@ -59,17 +65,26 @@
 
 ### 手順
 
-1. **実写真を用意**し、ローカル絶対パスを `sources.local.json` に追記する
-   （リポジトリにはコミットしない。gitignore 済み）:
+1. **実写真を用意し `e2e/golden/photos/<pose>.png` に配置**する
+   （ADR 0010 で in-repo 管理へ移行済み・private repo 前提）:
+
+   ```bash
+   cp /path/to/your/photo.png e2e/golden/photos/standing-tree.png
+   ```
+
+   `sources.json` に対応するエントリを追加する（相対パスで committed）:
 
    ```jsonc
    {
-     "tabletop": "/home/user/Pictures/tabletop.png",
-     "cross-seat": "/home/user/Pictures/cross-seat.png",
-     "kneel-sidebend": "/home/user/Pictures/kneel.png",
-     "standing-tree": "/home/user/Pictures/tree.png"   // ← 追加
+     "tabletop": "./photos/tabletop.png",
+     "cross-seat": "./photos/cross-seat.png",
+     "kneel-sidebend": "./photos/kneel-sidebend.png",
+     "standing-tree": "./photos/standing-tree.png"   // ← 追加
    }
    ```
+
+   別マシンで一時的に絶対パスで上書きしたい場合のみ `sources.local.json`
+   （gitignore 済み）に該当 pose キーを書く。両方にあればローカル上書きが勝つ。
 
 2. **`e2e/golden/<pose>.json` を新規作成**し、上記の最小例に沿って
    **`"tier": "holdout"` を明示**する。`tier` を省略すると `dev` 扱いになり、
@@ -110,6 +125,10 @@
 
 - 既存 3 ポーズ（dev tier）を holdout に変更しない（既存の計測系列との
   比較性が壊れる）
-- 実写真を `e2e/golden/` 配下や `sources.local.json` 以外の場所にコミットしない
+- **リポジトリを public のまま `photos/` を残さない**（ADR 0010）。public 化する
+  なら `photos/` を git 履歴から完全に除去 → `sources.local.json` 運用へ戻す →
+  ADR を棄却する新 ADR を書く、の 3 点を必ずセットで実施する
+- 実写真を **再配布・共有** しない（Slack / 他 repo / 公開 gist / スクショの再掲を含む）。
+  private repo 内の私的利用に限定する
 - CI（GitHub Actions）に `make pose-score` / `make golden-check` を配線しない
-  （実写真依存のためローカル実行前提）
+  （playwright + dev サーバ依存のためローカル実行前提）
