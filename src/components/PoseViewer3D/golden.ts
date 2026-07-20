@@ -346,10 +346,20 @@ export const scorePose = (
     const d = diag?.[stdName];
     const swingDeg = d?.swingDeg ?? null;
     const twistDeg = d?.twistDeg ?? null;
-    const swingScore = swingDeg == null ? null : Math.max(0, 1 - swingDeg / ANGLE_FOR_ZERO_SCORE);
-    const twistScore = twistDeg == null ? null : Math.max(0, 1 - twistDeg / ANGLE_FOR_ZERO_SCORE);
+    const swingScore =
+      swingDeg == null ? null : Math.max(0, 1 - swingDeg / ANGLE_FOR_ZERO_SCORE);
+    const twistScore =
+      twistDeg == null ? null : Math.max(0, 1 - twistDeg / ANGLE_FOR_ZERO_SCORE);
 
-    joints[stdName] = { angleDeg, score, weight, swingDeg, twistDeg, swingScore, twistScore };
+    joints[stdName] = {
+      angleDeg,
+      score,
+      weight,
+      swingDeg,
+      twistDeg,
+      swingScore,
+      twistScore,
+    };
     weightedSum += score * weight;
     weightTotal += weight;
     if (swingScore != null) {
@@ -376,7 +386,8 @@ export const scorePose = (
       coverage: {
         scored: scoredCount,
         missing: missingCount,
-        ratio: scoredCount + missingCount > 0 ? scoredCount / (scoredCount + missingCount) : 0,
+        ratio:
+          scoredCount + missingCount > 0 ? scoredCount / (scoredCount + missingCount) : 0,
       },
     },
     stats: computeStats(joints, total),
