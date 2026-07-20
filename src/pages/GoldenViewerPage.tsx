@@ -78,9 +78,10 @@ const markerColorFor = (stdName: string): number =>
 const EDIT_MARKER_SELECTED_COLOR = 0xf59e0b;
 const EDIT_MARKER_RADIUS = 0.025;
 const EDIT_MARKER_OPACITY = 0.85;
-/** 選択中マーカーの点滅（ゆっくり）。opacity を正弦波で min↔通常の間で振る */
+/** 選択中マーカーの点滅（ゆっくり）。完全には消さず 1.0↔0.5 をスムーズに振る */
 const EDIT_MARKER_BLINK_PERIOD_MS = 2000;
-const EDIT_MARKER_BLINK_MIN_OPACITY = 0.15;
+const EDIT_MARKER_BLINK_MIN_OPACITY = 0.5;
+const EDIT_MARKER_BLINK_MAX_OPACITY = 1.0;
 
 /** ゲート再計算の debounce（#93 STEP3） */
 const GATE_DEBOUNCE_MS = 300;
@@ -373,7 +374,7 @@ export function GoldenViewerPage() {
         const wave = 0.5 + 0.5 * Math.sin(phase * Math.PI * 2);
         (blinking.material as THREE.MeshBasicMaterial).opacity =
           EDIT_MARKER_BLINK_MIN_OPACITY +
-          (EDIT_MARKER_OPACITY - EDIT_MARKER_BLINK_MIN_OPACITY) * wave;
+          (EDIT_MARKER_BLINK_MAX_OPACITY - EDIT_MARKER_BLINK_MIN_OPACITY) * wave;
       }
       renderer.render(scene, camera);
     };
