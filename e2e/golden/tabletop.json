@@ -3,37 +3,37 @@
   "description": "四つ這い（テーブルトップ）。手と膝で支持、背中フラット、腿と腕は鉛直",
   "rotations": {
     "Hips": [
-      90,
+      88,
       0,
       0
     ],
     "LeftUpLeg": [
-      -90,
+      -85,
       0,
       0
     ],
     "RightUpLeg": [
-      -90,
+      -85,
       0,
       0
     ],
     "LeftLeg": [
-      95,
+      93,
       0,
       0
     ],
     "RightLeg": [
-      95,
+      93,
       0,
       0
     ],
     "LeftArm": [
-      90,
+      55,
       0,
       0
     ],
     "RightArm": [
-      90,
+      55,
       0,
       0
     ],
@@ -54,13 +54,25 @@
     ],
     "LeftForeArm": [
       0,
-      -90,
+      -30,
       0
     ],
     "RightForeArm": [
       0,
-      90,
+      30,
       0
     ]
-  }
+  },
+  "contacts": [
+    "hand:L",
+    "hand:R",
+    "knee:L",
+    "knee:R",
+    "toe:L",
+    "toe:R"
+  ],
+  "palmsDown": [
+    "left",
+    "right"
+  ]
 }

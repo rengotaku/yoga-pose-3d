@@ -379,6 +379,272 @@ export const detectSelfPenetrations = (
   return out.sort((x, y) => y.depthM - x.depthM);
 };
 
+/**
+ * 接地ゲート（#90）。groundMannequin は最下点 1 点しか床に合わせないため、
+ * 「膝が浮く」を検出できない。接地すべき部位について、その部位が支配する
+ * スキン頂点の最下点が床にどれだけ近いかを測る（ボーン位置でなく実表面で
+ * 判定するので、前に伸びた平手のように関節ボーンが浮いていても手のひらが
+ * 床に着いていれば接地と判定できる。指先立ち等「そもそも面が着かない」は
+ * 手の向きゲートが別途拾う）。
+ *
+ * 各接地部位は「支配ボーン名のサフィックス集合」で定義する。
+ */
+export const CONTACT_PART_BONES: Record<string, string[]> = {
+  "hand:L": ["LeftHand", "hand_l"],
+  "hand:R": ["RightHand", "hand_r"],
+  "knee:L": ["LeftLeg", "calf_l"],
+  "knee:R": ["RightLeg", "calf_r"],
+  "toe:L": ["LeftToeBase", "LeftFoot", "ball_l", "foot_l"],
+  "toe:R": ["RightToeBase", "RightFoot", "ball_r", "foot_r"],
+  "ankle:L": ["LeftFoot", "foot_l"],
+  "ankle:R": ["RightFoot", "foot_r"],
+  hip: ["Hips", "pelvis"],
+};
+
+/**
+ * 接地とみなす床からの最大高さ（m）。スキン表面基準。マネキンの体型比率
+ * （腕>腿）上、複数部位を完全に同一平面へ落とすのは難しく、視覚的に接地
+ * している良ポーズでも残差 10cm 程度が出る（実測）。この閾値は「明白な浮き
+ * （指先立ちの膝浮き 23cm 等）を弾く粗い網」として校正した値で、sub-cm の
+ * 厳密接地を課すものではない（#84 の設計方針・#90 で実測校正）。手のひら
+ * 接地の質は手の向きゲート（PALM）が別途担保する。 */
+export const CONTACT_MAX_CLEARANCE_M = 0.12;
+
+export type ContactClearance = {
+  part: string;
+  /** 部位スキン最下点の床からの高さ（m）。接地なら ≈0、浮きなら大きい */
+  clearanceM: number;
+  grounded: boolean;
+};
+
+/** 部位（支配ボーンサフィックス集合）が持つスキン頂点の最下 world Y。無ければ null */
+const partLowestY = (root: THREE.Object3D, suffixes: string[]): number | null => {
+  let minY = Infinity;
+  const v = new THREE.Vector3();
+  root.traverse((child) => {
+    if (!(child instanceof THREE.SkinnedMesh) || !child.skeleton) return;
+    const geom = child.geometry;
+    const skinIndex = geom.getAttribute("skinIndex");
+    const skinWeight = geom.getAttribute("skinWeight");
+    if (!skinIndex || !skinWeight || !geom.hasAttribute("position")) return;
+    const bones = child.skeleton.bones;
+    const count = geom.getAttribute("position").count;
+    for (let i = 0; i < count; i++) {
+      let maxW = 0;
+      let dom = 0;
+      for (let k = 0; k < 4; k++) {
+        const w = skinWeight.getComponent(i, k);
+        if (w > maxW) {
+          maxW = w;
+          dom = skinIndex.getComponent(i, k);
+        }
+      }
+      const name = bones[dom]?.name ?? "";
+      if (!suffixes.some((s) => name.endsWith(s) || name === s)) continue;
+      child.getVertexPosition(i, v);
+      v.applyMatrix4(child.matrixWorld);
+      if (v.y < minY) minY = v.y;
+    }
+  });
+  return Number.isFinite(minY) ? minY : null;
+};
+
+/**
+ * ポーズ適用・接地済みスケルトンについて、指定接地部位のスキン最下点の床
+ * からの高さを測る。解決できない部位はスキップ。root は接地（groundMannequin）
+ * 済みで呼ぶこと。
+ */
+export const computeContactClearances = (
+  root: THREE.Object3D,
+  parts: string[],
+  floorY: number
+): ContactClearance[] => {
+  root.updateMatrixWorld(true);
+  const out: ContactClearance[] = [];
+  for (const part of parts) {
+    const suffixes = CONTACT_PART_BONES[part];
+    if (!suffixes) continue;
+    const y = partLowestY(root, suffixes);
+    if (y === null) continue;
+    const clearanceM = y - floorY;
+    out.push({ part, clearanceM, grounded: clearanceM <= CONTACT_MAX_CLEARANCE_M });
+  }
+  return out;
+};
+
+/**
+ * 手のひらの向きゲート（#90）。palm normal の world 方向が「床向き（-Y）」か
+ * どうかを判定する。palm normal のボーン local 表現は bind ポーズで実測導出
+ * する（リグ軸規約に非依存。四肢ツイスト #82 と同じ手法）。
+ *
+ * bind ポーズ（A ポーズ想定）で手のひらは概ね内側〜後方を向く。ここでは
+ * 「Hand ボーンから見た palm 法線 = ForeArm→Hand 方向（手の伸び）と
+ * 直交し、かつ world 下方向成分を持つ local 軸」を、bind 時の Hand local
+ * 3 軸のうち最も鉛直に寝ている軸として選ぶ。左右で符号が反転する。
+ */
+export const PALM = {
+  /** 手が水平（手のひら/甲が床と平行）とみなす、法線と鉛直軸の許容角（度） */
+  maxTiltDeg: 35,
+} as const;
+
+/** 対称 3x3 行列の最小固有値に対応する固有ベクトル（Jacobi 回転）。
+ * 平面フィットの法線（点群が最も薄い方向）を取るのに使う。決定的。 */
+const smallestEigenvector = (m: number[][]): THREE.Vector3 => {
+  const a = m.map((row) => row.slice());
+  const v = [
+    [1, 0, 0],
+    [0, 1, 0],
+    [0, 0, 1],
+  ];
+  for (let iter = 0; iter < 50; iter++) {
+    // 最大の非対角要素を探す
+    let p = 0;
+    let q = 1;
+    let max = Math.abs(a[0][1]);
+    const pairs: [number, number][] = [
+      [0, 1],
+      [0, 2],
+      [1, 2],
+    ];
+    for (const [i, j] of pairs) {
+      if (Math.abs(a[i][j]) >= max) {
+        max = Math.abs(a[i][j]);
+        p = i;
+        q = j;
+      }
+    }
+    if (max < 1e-12) break;
+    const app = a[p][p];
+    const aqq = a[q][q];
+    const apq = a[p][q];
+    const phi = 0.5 * Math.atan2(2 * apq, aqq - app);
+    const c = Math.cos(phi);
+    const s = Math.sin(phi);
+    for (let k = 0; k < 3; k++) {
+      const akp = a[k][p];
+      const akq = a[k][q];
+      a[k][p] = c * akp - s * akq;
+      a[k][q] = s * akp + c * akq;
+    }
+    for (let k = 0; k < 3; k++) {
+      const apk = a[p][k];
+      const aqk = a[q][k];
+      a[p][k] = c * apk - s * aqk;
+      a[q][k] = s * apk + c * aqk;
+    }
+    for (let k = 0; k < 3; k++) {
+      const vkp = v[k][p];
+      const vkq = v[k][q];
+      v[k][p] = c * vkp - s * vkq;
+      v[k][q] = s * vkp + c * vkq;
+    }
+  }
+  const eig = [a[0][0], a[1][1], a[2][2]];
+  let idx = 0;
+  if (eig[1] < eig[idx]) idx = 1;
+  if (eig[2] < eig[idx]) idx = 2;
+  return new THREE.Vector3(v[0][idx], v[1][idx], v[2][idx]).normalize();
+};
+
+/** 指定 Hand ボーンが支配する頂点群（スキニング適用後 world 座標）を集める */
+const collectHandVertices = (
+  root: THREE.Object3D,
+  side: "left" | "right"
+): THREE.Vector3[] => {
+  const suffix = side === "left" ? "LeftHand" : "RightHand";
+  const alias = side === "left" ? "hand_l" : "hand_r";
+  const pts: THREE.Vector3[] = [];
+  const v = new THREE.Vector3();
+  root.traverse((child) => {
+    if (!(child instanceof THREE.SkinnedMesh) || !child.skeleton) return;
+    const geom = child.geometry;
+    const skinIndex = geom.getAttribute("skinIndex");
+    const skinWeight = geom.getAttribute("skinWeight");
+    if (
+      !skinIndex ||
+      !skinWeight ||
+      !geom.hasAttribute("position") ||
+      !geom.hasAttribute("skinWeight")
+    )
+      return;
+    const bones = child.skeleton.bones;
+    const count = geom.getAttribute("position").count;
+    for (let i = 0; i < count; i++) {
+      let maxW = 0;
+      let dom = 0;
+      for (let k = 0; k < 4; k++) {
+        const w = skinWeight.getComponent(i, k);
+        if (w > maxW) {
+          maxW = w;
+          dom = skinIndex.getComponent(i, k);
+        }
+      }
+      const name = bones[dom]?.name ?? "";
+      if (!(name.endsWith(suffix) || name === alias)) continue;
+      child.getVertexPosition(i, v);
+      v.applyMatrix4(child.matrixWorld);
+      pts.push(v.clone());
+    }
+  });
+  return pts;
+};
+
+/**
+ * 手の平面フィット法線（world）を頂点群から求める（#90）。手メッシュは
+ * palm 法線方向に薄いため、点群の最小分散軸 = palm 法線。符号は曖昧なので
+ * 「鉛直との傾き」判定にのみ使う（palm up/down は区別しない v1）。
+ * 頂点が取れない（テストのモックリグ等）場合は null。
+ */
+export const computeHandSlabNormal = (
+  root: THREE.Object3D,
+  side: "left" | "right"
+): THREE.Vector3 | null => {
+  const pts = collectHandVertices(root, side);
+  if (pts.length < 12) return null;
+  const c = new THREE.Vector3();
+  for (const p of pts) c.add(p);
+  c.multiplyScalar(1 / pts.length);
+  const cov = [
+    [0, 0, 0],
+    [0, 0, 0],
+    [0, 0, 0],
+  ];
+  for (const p of pts) {
+    const d = p.clone().sub(c);
+    const e = [d.x, d.y, d.z];
+    for (let i = 0; i < 3; i++) for (let j = 0; j < 3; j++) cov[i][j] += e[i] * e[j];
+  }
+  return smallestEigenvector(cov);
+};
+
+export type PalmCheck = {
+  side: "left" | "right";
+  /** palm 法線と鉛直軸の鋭角（度）。手が水平なら小さい */
+  tiltDeg: number;
+  flat: boolean;
+};
+
+/**
+ * palmsDown で指定した手が「水平（手のひら/甲が床と平行）」かを判定する（#90）。
+ * 指先立ちだと手スラブが立って法線が水平寄りになり tilt が大きくなる。
+ * 法線が取れない手はスキップ。
+ */
+export const checkPalmsFlat = (
+  root: THREE.Object3D,
+  sides: ("left" | "right")[]
+): PalmCheck[] => {
+  const out: PalmCheck[] = [];
+  const up = new THREE.Vector3(0, 1, 0);
+  for (const side of sides) {
+    const n = computeHandSlabNormal(root, side);
+    if (!n) continue;
+    const raw = THREE.MathUtils.radToDeg(n.angleTo(up));
+    const tiltDeg = Math.min(raw, 180 - raw);
+    out.push({ side, tiltDeg, flat: tiltDeg <= PALM.maxTiltDeg });
+  }
+  return out;
+};
+
 /** landmark 整合比較のパラメータ */
 export const LANDMARK_MATCH = {
   /** 両側の endpoint がこの visibility 以上のセグメントのみ比較する */

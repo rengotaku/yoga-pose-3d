@@ -12,6 +12,17 @@ export type GoldenPose = {
   pose: string;
   description?: string;
   rotations: Record<string, [number, number, number]>;
+  /**
+   * 床に接地しているべき部位（#90）。接地ゲートが各部位の関節ボーンの
+   * 床高さを測定して浮きを検出する。値は poseValidity.ts の CONTACT_BONES
+   * のキー（例: "hand:L", "knee:R", "toe:L", "hip"）。
+   */
+  contacts?: string[];
+  /**
+   * 手のひらを床向き（-Y）に保つべき手（#90）。接地ゲートと併せて
+   * 「指先立ち」でなく「手のひら接地」を保証する。値は "left" / "right"。
+   */
+  palmsDown?: ("left" | "right")[];
 };
 
 export type QuatTuple = [number, number, number, number];
