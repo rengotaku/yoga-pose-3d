@@ -84,8 +84,12 @@
   ADR 0008 で指標A に **coverage ゲート**（比較セグメント数≧4 かつ 系統≧2）を
   追加し、「比較 1/9」で合格していた kneel-sidebend のようなケースを FAIL にする。
   `make golden-check JSON=<path>` で機械可読出力。
-- **注意**: 実写真は著作権配慮で `e2e/golden/sources.local.json`（gitignore 済み）に
-  ローカルパスを書く運用。CI では回さない。ローカルでの再計測前提。
+- **注意**: 実写真は `e2e/golden/photos/`（committed、ADR 0010）に配置し、
+  `e2e/golden/sources.json`（committed）が pose → 写真パスの default 対応表になる。
+  `sources.local.json`（gitignore 済み）は別マシン絶対パスの上書きに使うエスケープ
+  ハッチ。**リポジトリは private 前提**で、public 化する場合は ADR 0010 を再検討
+  する。CI では `make pose-score` / `make golden-check` を回さない（playwright +
+  dev サーバ依存のためローカル実行前提）。
 - **tier 分離（ADR 0009, #104）**: 各ゴールデン JSON に `tier: "dev" | "holdout"`
   を持たせ、`pose-score` の集計を dev（チューニング対象）/ holdout（改善作業から
   隠して汎化確認に使う）で分離する。既存 3 ポーズは全て `tier: "dev"`。

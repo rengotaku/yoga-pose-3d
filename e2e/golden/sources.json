@@ -1,0 +1,11 @@
+{
+  "tabletop": "./photos/tabletop.png",
+  "cross-seat": "./photos/cross-seat.png",
+  "kneel-sidebend": "./photos/kneel-sidebend.png",
+  "seated-side-fold": "./photos/seated-side-fold.png",
+  "supine-twist": "./photos/supine-twist.png",
+  "wide-legged-fold": "./photos/wide-legged-fold.png",
+  "side-angle": "./photos/side-angle.png",
+  "low-lunge-side": "./photos/low-lunge-side.png",
+  "standing-tree": "./photos/standing-tree.png"
+}

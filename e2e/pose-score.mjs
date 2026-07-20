@@ -17,9 +17,11 @@
  *     resultsByTier を追加（旧 results は resultsByTier.dev.concat(holdout)
  *     として後方互換維持）
  *
- * 実写真は著作権配慮でリポジトリにコミットしないため、ローカルパスを
- * e2e/golden/sources.local.json（gitignore 済み）で指定する:
- *   { "tabletop": "/abs/path/to/photo.png", ... }
+ * 実写真の参照優先順位（ADR 0010）:
+ *   1) e2e/golden/sources.local.json（gitignore 済み。存在時は最優先）
+ *   2) e2e/golden/sources.json（committed。in-repo 写真の default パス）
+ * 両方に同じ pose キーがあれば sources.local.json が勝つ。相対パスは
+ * e2e/golden/ からの相対として解決される。
  *
  * 前提: dev サーバ起動済み（ポートは PORT 環境変数、既定 5173）。
  * 実行: make pose-score                            （全ポーズ）
@@ -29,7 +31,7 @@
 import { chromium } from "playwright";
 import { readFileSync, existsSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { dirname, join } from "node:path";
+import { dirname, join, isAbsolute } from "node:path";
 import { ALLOWED_TIERS } from "./lib/aggregate.mjs";
 
 /** golden.tier を厳格に正規化。未指定は "dev"、既知でない値は throw。 */
@@ -44,7 +46,6 @@ import { aggregateTotals, splitByTier } from "./lib/aggregate.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const goldenDir = join(here, "golden");
-const sourcesPath = join(goldenDir, "sources.local.json");
 const port = process.env.PORT ?? "5173";
 const baseUrl = `http://localhost:${port}`;
 
@@ -54,20 +55,40 @@ const jsonPath =
   jsonFlagIdx >= 0 && cliArgs[jsonFlagIdx + 1] ? cliArgs[jsonFlagIdx + 1] : null;
 const positionals = cliArgs.filter((_, i) => i !== jsonFlagIdx && i !== jsonFlagIdx + 1);
 
-if (!existsSync(sourcesPath)) {
+/**
+ * sources.json（committed）と sources.local.json（gitignore・ローカル上書き）を
+ * マージして pose → 絶対パスの map を返す（ADR 0010）。
+ * どちらも無ければ空マップ。相対パスは goldenDir 基準で絶対化する。
+ */
+const loadSources = () => {
+  const merged = {};
+  for (const name of ["sources.json", "sources.local.json"]) {
+    const p = join(goldenDir, name);
+    if (!existsSync(p)) continue;
+    const raw = JSON.parse(readFileSync(p, "utf8"));
+    for (const [pose, photo] of Object.entries(raw)) {
+      if (typeof photo !== "string") continue;
+      merged[pose] = isAbsolute(photo) ? photo : join(goldenDir, photo);
+    }
+  }
+  return merged;
+};
+
+const sources = loadSources();
+if (Object.keys(sources).length === 0) {
   console.error(
-    `sources.local.json not found: ${sourcesPath}\n` +
-      "e2e/golden/sources.local.json.example をコピーして実写真のローカルパスを設定してください"
+    `no photo sources: neither sources.json nor sources.local.json found in ${goldenDir}\n` +
+      "e2e/golden/sources.local.json.example を参考に sources.local.json を作るか、\n" +
+      "in-repo の e2e/golden/sources.json を追加してください（ADR 0010）"
   );
   process.exit(1);
 }
-const sources = JSON.parse(readFileSync(sourcesPath, "utf8"));
 const poseFilter = process.env.POSE ?? positionals[0];
 const entries = Object.entries(sources).filter(
   ([pose]) => !poseFilter || pose === poseFilter
 );
 if (entries.length === 0) {
-  console.error(`no pose entries in ${sourcesPath}` + (poseFilter ? ` (POSE=${poseFilter})` : ""));
+  console.error(`no pose entries` + (poseFilter ? ` (POSE=${poseFilter})` : ""));
   process.exit(1);
 }
 
