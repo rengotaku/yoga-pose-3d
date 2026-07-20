@@ -112,6 +112,11 @@ export function GoldenViewerPage() {
   const rotationsStateRef = useRef<Rotations>({});
   /** ギズモ・スライダーのドラッグ開始時点のスナップショット（確定時の履歴 push 用） */
   const dragStartRotationsRef = useRef<Rotations | null>(null);
+  /** ギズモドラッグ中フラグ。ドラッグ最中に前回分の debounce タイマーが発火して
+   * groundMannequin がモデル位置を動かすのを防ぐ（ゲート再計算のガードに使う） */
+  const isDraggingRef = useRef(false);
+  /** マーカー共有の SphereGeometry。アンマウント時に dispose するため ref で控える */
+  const markerGeometryRef = useRef<THREE.SphereGeometry | null>(null);
 
   const [editMode, setEditMode] = useState(false);
   const [selectedBone, setSelectedBone] = useState<SelectedBone | null>(null);
@@ -167,6 +172,7 @@ export function GoldenViewerPage() {
 
     const handleDraggingChanged = (event: { value: unknown }) => {
       const dragging = Boolean(event.value);
+      isDraggingRef.current = dragging;
       if (controlsRef.current) controlsRef.current.enabled = !dragging;
       if (dragging) {
         dragStartRotationsRef.current = rotationsStateRef.current;
@@ -181,9 +187,11 @@ export function GoldenViewerPage() {
         initialQuatsRef.current,
         Object.keys(before)
       );
+      // no-op ドラッグでも state を更新して debounce effect を再駆動する
+      // （ドラッグ中に前回分の再計算タイマーがスキップされた場合の取りこぼし防止）
+      setRotationsState(after);
       if (sameRotations(before, after)) return;
       setHistory((h) => pushHistory(h, before));
-      setRotationsState(after);
     };
     transformControls.addEventListener("dragging-changed", handleDraggingChanged);
 
@@ -282,6 +290,7 @@ export function GoldenViewerPage() {
         });
         const boneNames = Array.from(boneMap.keys());
         const markerGeometry = new THREE.SphereGeometry(EDIT_MARKER_RADIUS, 12, 12);
+        markerGeometryRef.current = markerGeometry;
         for (const stdName of Object.keys(BONE_ALIASES)) {
           const actualName = resolveBoneName(stdName, boneNames);
           const bone = actualName ? boneMap.get(actualName) : undefined;
@@ -339,6 +348,14 @@ export function GoldenViewerPage() {
       renderer.domElement.removeEventListener("pointerdown", handlePointerDown);
       transformControls.removeEventListener("dragging-changed", handleDraggingChanged);
       transformControls.dispose();
+      // 関節マーカー（最大 ~20 個）の material と、共有 geometry を dispose する
+      // (SPA 再訪のたびに GPU リソースがリークするのを防ぐ)
+      for (const marker of markerMeshesRef.current.values()) {
+        marker.parent?.remove(marker);
+        (marker.material as THREE.Material).dispose();
+      }
+      markerGeometryRef.current?.dispose();
+      markerGeometryRef.current = null;
       mount.removeChild(renderer.domElement);
       renderer.dispose();
       cameraRef.current = null;
@@ -455,6 +472,11 @@ export function GoldenViewerPage() {
 
   // ゲート再計算（#93 STEP3）: 編集値が確定するたびに 300ms debounce で再計算
   const recomputeGateReport = useCallback(() => {
+    // ドラッグ中に前回分の debounce タイマーが発火すると groundMannequin が
+    // モデル位置を動かしてしまうため、ドラッグ終了後の再計算まで見送る
+    // (dragging-changed(false) 時の履歴 push で rotationsState が更新され、
+    // それを deps に持つこの effect が改めて 300ms 後の再計算をスケジュールする)
+    if (isDraggingRef.current) return;
     const mannequin = mannequinRef.current;
     if (!current || !mannequin) return;
     groundMannequin(mannequin, FLOOR_Y);
