@@ -4,15 +4,22 @@
  * ゴールデン（手付け正解）の world 回転の角度差から、関節別 + 総合スコア
  * （0〜100%）を算出して表示する。
  *
+ * #102 で以下を追加:
+ *   - 関節ごとの swing/twist スコア表示
+ *   - サマリに swingAvg / twistAvg / coverage / p10 / median / min
+ *   - --json <path> で機械可読出力（後段の hold-out 集計・分位点比較に使う）
+ *
  * 実写真は著作権配慮でリポジトリにコミットしないため、ローカルパスを
  * e2e/golden/sources.local.json（gitignore 済み）で指定する:
  *   { "tabletop": "/abs/path/to/photo.png", ... }
  *
  * 前提: dev サーバ起動済み（ポートは PORT 環境変数、既定 5173）。
- * 実行: make pose-score   （POSE=<id> で単一ポーズのみ）
+ * 実行: make pose-score                            （全ポーズ）
+ *       make pose-score POSE=tabletop              （単一ポーズ）
+ *       make pose-score -- --json /tmp/score.json  （JSON も併記出力）
  */
 import { chromium } from "playwright";
-import { readFileSync, existsSync } from "node:fs";
+import { readFileSync, existsSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
@@ -22,6 +29,12 @@ const sourcesPath = join(goldenDir, "sources.local.json");
 const port = process.env.PORT ?? "5173";
 const baseUrl = `http://localhost:${port}`;
 
+const cliArgs = process.argv.slice(2);
+const jsonFlagIdx = cliArgs.indexOf("--json");
+const jsonPath =
+  jsonFlagIdx >= 0 && cliArgs[jsonFlagIdx + 1] ? cliArgs[jsonFlagIdx + 1] : null;
+const positionals = cliArgs.filter((_, i) => i !== jsonFlagIdx && i !== jsonFlagIdx + 1);
+
 if (!existsSync(sourcesPath)) {
   console.error(
     `sources.local.json not found: ${sourcesPath}\n` +
@@ -30,7 +43,7 @@ if (!existsSync(sourcesPath)) {
   process.exit(1);
 }
 const sources = JSON.parse(readFileSync(sourcesPath, "utf8"));
-const poseFilter = process.env.POSE ?? process.argv[2];
+const poseFilter = process.env.POSE ?? positionals[0];
 const entries = Object.entries(sources).filter(
   ([pose]) => !poseFilter || pose === poseFilter
 );
@@ -48,8 +61,12 @@ if (!res || !res.ok) {
 const browser = await chromium.launch();
 const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
 
+const fmtDeg = (v) => (v == null ? "  -  " : v.toFixed(1).padStart(6));
+const fmtPct = (v) => (v == null ? " - " : (v * 100).toFixed(0).padStart(3));
+
 let failed = false;
 const totals = [];
+const jsonResults = [];
 for (const [pose, photoPath] of entries) {
   const goldenPath = join(goldenDir, `${pose}.json`);
   if (!existsSync(goldenPath)) {
@@ -72,20 +89,36 @@ for (const [pose, photoPath] of entries) {
     await page.waitForTimeout(1_500);
     const score = await page.evaluate((g) => window.__poseDebug.scoreGolden(g), golden);
 
-    console.log(`\n=== ${pose}: 総合 ${score.total.toFixed(1)}% ===`);
-    const rows = Object.entries(score.joints).sort(
-      (a, b) => a[1].score - b[1].score
+    const swingAvgPct = score.summary?.swingAvg == null ? " -  " : (score.summary.swingAvg * 100).toFixed(1).padStart(4);
+    const twistAvgPct = score.summary?.twistAvg == null ? " -  " : (score.summary.twistAvg * 100).toFixed(1).padStart(4);
+    const cov = score.summary?.coverage ?? { scored: 0, missing: 0, ratio: 0 };
+    console.log(
+      `\n=== ${pose}: 総合 ${score.total.toFixed(1)}%  ` +
+        `swing ${swingAvgPct}%  twist ${twistAvgPct}%  ` +
+        `coverage ${cov.scored}/${cov.scored + cov.missing} ===`
     );
+    const rows = Object.entries(score.joints).sort((a, b) => a[1].score - b[1].score);
     for (const [joint, j] of rows) {
       console.log(
-        `  ${joint.padEnd(12)} 角度差 ${j.angleDeg.toFixed(1).padStart(6)}°  ` +
-          `score ${(j.score * 100).toFixed(0).padStart(3)}%  (weight ${j.weight})`
+        `  ${joint.padEnd(12)} 角度差 ${fmtDeg(j.angleDeg)}°  ` +
+          `score ${fmtPct(j.score)}%  ` +
+          `swing ${fmtDeg(j.swingDeg)}°/${fmtPct(j.swingScore)}%  ` +
+          `twist ${fmtDeg(j.twistDeg)}°/${fmtPct(j.twistScore)}%  ` +
+          `(w ${j.weight})`
       );
     }
     if (score.missing.length > 0) {
       console.log(`  missing: ${score.missing.join(", ")}`);
     }
+    if (score.stats) {
+      console.log(
+        `  分位点: p10 ${(score.stats.p10 * 100).toFixed(1)}%  ` +
+          `median ${(score.stats.median * 100).toFixed(1)}%  ` +
+          `min ${(score.stats.min * 100).toFixed(1)}%`
+      );
+    }
     totals.push({ pose, total: score.total });
+    jsonResults.push({ pose, score });
   } catch (e) {
     failed = true;
     console.error(`fail: ${pose}: ${e}`);
@@ -99,6 +132,24 @@ if (totals.length > 0) {
   }
   const avg = totals.reduce((s, t) => s + t.total, 0) / totals.length;
   console.log(`  ${"average".padEnd(16)} ${avg.toFixed(1)}%`);
+}
+
+if (jsonPath && jsonResults.length > 0) {
+  const avg =
+    totals.length > 0 ? totals.reduce((s, t) => s + t.total, 0) / totals.length : 0;
+  writeFileSync(
+    jsonPath,
+    JSON.stringify(
+      {
+        schemaVersion: 1,
+        average: avg,
+        results: jsonResults,
+      },
+      null,
+      2
+    )
+  );
+  console.log(`\nJSON output: ${jsonPath}`);
 }
 
 await browser.close();
