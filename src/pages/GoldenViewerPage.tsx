@@ -33,6 +33,8 @@ import {
   type Penetration,
   type RomViolation,
 } from "../components/PoseViewer3D/poseValidity";
+import { clampAxisToRom, romRangeFor } from "../components/PoseViewer3D/romClamp";
+import { relaxDownstream } from "../components/PoseViewer3D/relax";
 import { calculateCameraFit } from "../components/PoseViewer3D/cameraFit";
 import { GOLDEN_POSES, goldenDataHash } from "./goldenPoses";
 
@@ -127,23 +129,6 @@ const EULER_AXES: { index: 0 | 1 | 2; label: string; key: "x" | "y" | "z" }[] = 
   { index: 2, label: "Z", key: "z" },
 ];
 
-/** 軸の ROM 範囲を返す（テーブルに無いボーン/軸は ±180 で実質無制限） */
-const romRangeFor = (
-  stdName: string,
-  axis: "x" | "y" | "z"
-): { min: number; max: number } =>
-  romLimitFor(stdName)?.[axis] ?? { min: -180, max: 180 };
-
-/** リグを可動域内に制限する: ROM の min/max へクランプした値を返す */
-const clampAxisToRom = (
-  stdName: string,
-  axis: "x" | "y" | "z",
-  value: number
-): number => {
-  const range = romRangeFor(stdName, axis);
-  return Math.min(range.max, Math.max(range.min, value));
-};
-
 /**
  * ゴールデンポーズ簡易ビューア（#78）。ゴールデン JSON をマネキンへ直接適用し、
  * OrbitControls で 360° 回転・ズームして確認する。静止画レンダーより視認性を
@@ -189,6 +174,9 @@ export function GoldenViewerPage() {
   );
   const [copyStatus, setCopyStatus] = useState<"idle" | "copied" | "error">("idle");
   const [gateReport, setGateReport] = useState<GateReport | null>(null);
+  // 脱力モード（#110）: 選択ボーン以下を重力方向へ整列するときの強度と、指を対象に含めるか
+  const [relaxStrength, setRelaxStrength] = useState(0.7);
+  const [relaxIncludeFingers, setRelaxIncludeFingers] = useState(false);
 
   useEffect(() => {
     editModeRef.current = editMode;
@@ -684,6 +672,29 @@ export function GoldenViewerPage() {
     setTimeout(() => setCopyStatus("idle"), 2000);
   };
 
+  // 脱力モード（#110）: 選択ボーン以下を重力方向へ整列（bone の副作用を最終状態で
+  // 1 手だけエクスポート → 1 履歴エントリに束ねる。ROM は内部でクランプ済み）
+  const handleRelax = () => {
+    const mannequin = mannequinRef.current;
+    if (!selectedBone || !mannequin || !current) return;
+    const info = editableBonesRef.current.get(selectedBone.actualName);
+    if (!info) return;
+    const before = rotationsState;
+    const result = relaxDownstream(info.bone, initialQuatsRef.current, {
+      strength: relaxStrength,
+      includeFingers: relaxIncludeFingers,
+    });
+    if (result.changedCount === 0) return; // 分岐 or 葉のみ = 変化なしなら履歴を積まない
+    const after = exportGoldenRotations(
+      mannequin,
+      initialQuatsRef.current,
+      Object.keys(before)
+    );
+    if (sameRotations(before, after)) return;
+    setRotationsState(after);
+    setHistory((h) => pushHistory(h, before));
+  };
+
   const selectedEuler = selectedBone
     ? (rotationsState[selectedBone.stdName] ?? [0, 0, 0])
     : null;
@@ -816,6 +827,41 @@ export function GoldenViewerPage() {
                     </label>
                   );
                 })}
+                {/* 脱力モード（#110）: 選択ボーン以下を重力方向へ整列 + ROM 内クランプ。
+                    apply-and-fix なので押した瞬間に確定（Undo で復元可能）。分岐 or 葉のみ
+                    ならボタンは押せても no-op で終わる（履歴も積まない）。 */}
+                <div className="flex flex-col gap-1 border-t border-white/20 pt-2 mt-1">
+                  <button
+                    type="button"
+                    onClick={handleRelax}
+                    className="px-2 py-1 rounded bg-emerald-500 hover:bg-emerald-400 text-white font-medium"
+                  >
+                    🍃 下流を脱力
+                  </button>
+                  <label className="flex items-center gap-2">
+                    <span className="w-14 text-white/80">強度</span>
+                    <input
+                      type="range"
+                      min={0.1}
+                      max={1.0}
+                      step={0.05}
+                      value={relaxStrength}
+                      onChange={(e) => setRelaxStrength(Number(e.target.value))}
+                      className="flex-1"
+                    />
+                    <span className="w-10 text-right tabular-nums">
+                      {relaxStrength.toFixed(2)}
+                    </span>
+                  </label>
+                  <label className="flex items-center gap-2">
+                    <input
+                      type="checkbox"
+                      checked={relaxIncludeFingers}
+                      onChange={(e) => setRelaxIncludeFingers(e.target.checked)}
+                    />
+                    <span className="text-white/80">指を含める</span>
+                  </label>
+                </div>
               </div>
             ) : (
               <p className="text-white/50">未選択</p>
