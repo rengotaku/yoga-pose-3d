@@ -11,7 +11,7 @@
  * exit code: B の違反が 1 件でもあれば 1
  */
 import { chromium } from "playwright";
-import { readdirSync, readFileSync, existsSync, mkdtempSync } from "node:fs";
+import { readdirSync, readFileSync, existsSync, mkdtempSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join, basename } from "node:path";
 import { tmpdir } from "node:os";
@@ -21,7 +21,13 @@ const goldenDir = join(here, "golden");
 const port = process.env.PORT ?? "5173";
 const baseUrl = `http://localhost:${port}`;
 
-const poseArg = process.env.POSE ?? process.argv[2];
+const cliArgs = process.argv.slice(2);
+const jsonFlagIdx = cliArgs.indexOf("--json");
+const jsonPath =
+  jsonFlagIdx >= 0 && cliArgs[jsonFlagIdx + 1] ? cliArgs[jsonFlagIdx + 1] : null;
+const positionals = cliArgs.filter((_, i) => i !== jsonFlagIdx && i !== jsonFlagIdx + 1);
+
+const poseArg = process.env.POSE ?? positionals[0];
 const poses = poseArg
   ? [poseArg]
   : readdirSync(goldenDir)
@@ -41,6 +47,29 @@ const sources = existsSync(sourcesPath)
  */
 const A_MEAN_MAX_DEG = 20;
 const A_SEG_MAX_DEG = 35;
+
+/**
+ * coverage の合格条件（#102）。従来「比較 1/9」でも合格扱いしていたパスを
+ * 塞ぐ。閾値の根拠と実測ふるい分けは ADR 0011 参照。
+ *   - 比較セグメント数が MIN_SEGMENTS 未満なら FAIL
+ *   - 使用された系統数（体幹・左腕・右腕・左脚・右脚 の 5 系統）が
+ *     MIN_SYSTEMS 未満なら FAIL
+ */
+const A_MIN_SEGMENTS = 4;
+const A_MIN_SYSTEMS = 2;
+
+/** 9 セグメントを 5 系統に集約する */
+const SEGMENT_SYSTEM = {
+  torso: "torso",
+  "upperArm:L": "arm:L",
+  "foreArm:L": "arm:L",
+  "upperArm:R": "arm:R",
+  "foreArm:R": "arm:R",
+  "thigh:L": "leg:L",
+  "calf:L": "leg:L",
+  "thigh:R": "leg:R",
+  "calf:R": "leg:R",
+};
 
 const res = await fetch(baseUrl).catch(() => null);
 if (!res || !res.ok) {
@@ -69,6 +98,7 @@ const landmarksForImage = async (imagePath) => {
 };
 
 let violation = false;
+const jsonResults = [];
 for (const pose of poses) {
   const goldenPath = join(goldenDir, `${pose}.json`);
   if (!existsSync(goldenPath)) {
@@ -77,6 +107,14 @@ for (const pose of poses) {
   }
   const golden = JSON.parse(readFileSync(goldenPath, "utf8"));
   console.log(`\n=== ${pose} ===`);
+  const result = {
+    pose,
+    rom: { violations: 0 },
+    penetration: { violations: 0 },
+    contact: { violations: 0, total: 0 },
+    palm: { violations: 0, total: 0 },
+    photoMatch: { status: "skip", meanDeg: null, over: 0, coverage: 0, systems: 0, coverageFail: false },
+  };
 
   // 指標B: ゴールデン適用 → ROM + めり込み
   await page.goto(baseUrl, { waitUntil: "domcontentloaded" });
@@ -84,6 +122,7 @@ for (const pose of poses) {
   await page.waitForFunction(() => Boolean(window.__poseDebug), { timeout: 30_000 });
   const check = await page.evaluate((g) => window.__poseDebug.checkGolden(g), golden);
 
+  result.rom.violations = check.rom.length;
   if (check.rom.length === 0) {
     console.log("  ROM:        違反 0");
   } else {
@@ -95,6 +134,7 @@ for (const pose of poses) {
       );
     }
   }
+  result.penetration.violations = check.penetrations.length;
   if (check.penetrations.length === 0) {
     console.log("  めり込み:   違反 0");
   } else {
@@ -107,6 +147,8 @@ for (const pose of poses) {
 
   // 接地ゲート（#90）: 指定部位の関節ボーンが床に着いているか
   const floating = (check.contacts ?? []).filter((c) => !c.grounded);
+  result.contact.total = (check.contacts ?? []).length;
+  result.contact.violations = floating.length;
   if ((check.contacts ?? []).length === 0) {
     console.log("  接地:       指定なし");
   } else if (floating.length === 0) {
@@ -124,6 +166,8 @@ for (const pose of poses) {
 
   // 手の向きゲート（#90）: 接地手の手のひらが水平か（指先立ち検出）
   const tilted = (check.palms ?? []).filter((p) => !p.flat);
+  result.palm.total = (check.palms ?? []).length;
+  result.palm.violations = tilted.length;
   if ((check.palms ?? []).length === 0) {
     console.log("  手の向き:   指定なし");
   } else if (tilted.length === 0) {
@@ -143,11 +187,14 @@ for (const pose of poses) {
   const photoPath = sources[pose];
   if (!photoPath || !existsSync(photoPath)) {
     console.log("  写真整合:   skip（実写真パス未設定）");
+    jsonResults.push(result);
     continue;
   }
   const photoLm = await landmarksForImage(photoPath);
   if (!photoLm) {
     console.log("  写真整合:   検出不能（実写真で推定器が人物検出せず）");
+    result.photoMatch.status = "detect_fail_photo";
+    jsonResults.push(result);
     continue;
   }
 
@@ -195,6 +242,8 @@ for (const pose of poses) {
 
   if (viewMatches.length === 0) {
     console.log("  写真整合:   検出不能（全視点でマネキンレンダーの人物検出に失敗）");
+    result.photoMatch.status = "detect_fail_render";
+    jsonResults.push(result);
     continue;
   }
 
@@ -213,10 +262,23 @@ for (const pose of poses) {
   const segs = Array.from(merged.values());
   const meanDeg = segs.reduce((s, m) => s + m.angleDeg, 0) / segs.length;
   const over = segs.filter((s) => s.angleDeg > A_SEG_MAX_DEG);
-  const aFail = meanDeg > A_MEAN_MAX_DEG || over.length > 0;
+  // coverage ゲート（#102）: 比較 X/9 と系統数の下限を強制。
+  // 従来「比較 1/9」でも「合格」表示されていたパスをここで塞ぐ
+  const systems = new Set(segs.map((s) => SEGMENT_SYSTEM[s.segment] ?? "other"));
+  const coverageFail =
+    segs.length < A_MIN_SEGMENTS || systems.size < A_MIN_SYSTEMS;
+  const qualityFail = meanDeg > A_MEAN_MAX_DEG || over.length > 0;
+  const aFail = coverageFail || qualityFail;
   if (aFail) violation = true;
+  const reason = coverageFail
+    ? qualityFail
+      ? "coverage+品質"
+      : "coverage"
+    : qualityFail
+    ? "品質"
+    : "";
   console.log(
-    `  写真整合:   平均角度差 ${meanDeg.toFixed(1)}°（合格: 平均≦${A_MEAN_MAX_DEG}° かつ 各≦${A_SEG_MAX_DEG}°） -> ${aFail ? "違反" : "合格"}（比較 ${segs.length}/9）`
+    `  写真整合:   平均角度差 ${meanDeg.toFixed(1)}°（合格: 平均≦${A_MEAN_MAX_DEG}° かつ 各≦${A_SEG_MAX_DEG}°、比較≧${A_MIN_SEGMENTS}/9 かつ 系統≧${A_MIN_SYSTEMS}/5） -> ${aFail ? `違反(${reason})` : "合格"}（比較 ${segs.length}/9、系統 ${systems.size}/5）`
   );
   for (const s of segs.sort((x, y) => y.angleDeg - x.angleDeg)) {
     const dir = process.env.VERBOSE
@@ -226,6 +288,28 @@ for (const pose of poses) {
       `    ${s.segment.padEnd(11)} ${s.angleDeg.toFixed(1).padStart(6)}° (${segSource.get(s.segment)})${dir}`
     );
   }
+  result.photoMatch = {
+    status: aFail ? "fail" : "pass",
+    meanDeg,
+    over: over.length,
+    coverage: segs.length,
+    systems: systems.size,
+    coverageFail,
+    qualityFail,
+  };
+  jsonResults.push(result);
+}
+
+if (jsonPath && jsonResults.length > 0) {
+  writeFileSync(
+    jsonPath,
+    JSON.stringify(
+      { schemaVersion: 1, results: jsonResults, exitCode: violation ? 1 : 0 },
+      null,
+      2
+    )
+  );
+  console.log(`\nJSON output: ${jsonPath}`);
 }
 
 await browser.close();
