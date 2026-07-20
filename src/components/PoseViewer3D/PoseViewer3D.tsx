@@ -7,13 +7,16 @@ import type { RawLandmark } from "./muscles";
 import {
   buildBodyCapsules,
   checkGoldenRom,
+  checkPalmsFlat,
   compareLandmarkPoses,
+  computeContactClearances,
   detectSelfPenetrations,
 } from "./poseValidity";
 import { fuseLandmarks } from "./fusion";
 import { clampHingeJoints } from "./jointLimits";
 import { MuscleLegend, type MuscleActivation } from "./MuscleLegend";
 import { calculateCameraFit } from "./cameraFit";
+import { resolveBoneName } from "./retarget";
 import {
   loadMannequin,
   setupMannequinMaterials,
@@ -291,10 +294,47 @@ export const PoseViewer3D: React.FC = () => {
               fitCameraToSkeleton();
               const rom = checkGoldenRom(golden);
               const penetrations = detectSelfPenetrations(buildBodyCapsules(mannequin));
-              return { rom, penetrations, unresolved };
+              const contacts = computeContactClearances(
+                mannequin,
+                golden.contacts ?? [],
+                FLOOR_Y
+              );
+              const palms = checkPalmsFlat(mannequin, golden.palmsDown ?? []);
+              return { rom, penetrations, contacts, palms, unresolved };
             },
             compareLandmarks: (a: RawLandmark[], b: RawLandmark[]) =>
               compareLandmarkPoses(a, b),
+            // 現在表示中のスケルトンの、指定 mixamo ボーンの world 位置と
+            // 子方向（#90 診断: 接地修正の角度を計算で出すため）
+            boneWorld: (mixamoNames: string[]) => {
+              const map = new Map<string, THREE.Bone>();
+              mannequin.traverse((c) => {
+                if ((c as THREE.Bone).isBone) map.set(c.name, c as THREE.Bone);
+              });
+              const names = Array.from(map.keys());
+              mannequin.updateMatrixWorld(true);
+              const out: Record<
+                string,
+                { pos: [number, number, number]; dir: [number, number, number] | null }
+              > = {};
+              for (const mn of mixamoNames) {
+                const rn = resolveBoneName(mn, names);
+                const bone = rn ? map.get(rn) : undefined;
+                if (!bone) continue;
+                const p = bone.getWorldPosition(new THREE.Vector3());
+                let dir: [number, number, number] | null = null;
+                if (bone.children[0]) {
+                  const cp = bone.children[0].getWorldPosition(new THREE.Vector3());
+                  const d = cp.sub(p);
+                  if (d.lengthSq() > 1e-10) {
+                    d.normalize();
+                    dir = [d.x, d.y, d.z];
+                  }
+                }
+                out[mn] = { pos: [p.x, p.y, p.z], dir };
+              }
+              return out;
+            },
             scoreGolden: (golden: GoldenPose) => {
               // 現在のポーズ（パイプライン出力）を先に採取してからゴールデンを
               // 適用する。呼び出し後はゴールデンが表示されたままになる

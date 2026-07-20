@@ -4,6 +4,8 @@ import { LM, type RawLandmark } from "./muscles";
 import type { GoldenPose } from "./golden";
 import {
   checkGoldenRom,
+  checkPalmsFlat,
+  computeContactClearances,
   romLimitFor,
   segmentDistance,
   buildBodyCapsules,
@@ -214,5 +216,108 @@ describe("compareLandmarkPoses", () => {
     b[LM.LEFT_ANKLE] = { x: 0.1, y: 0.9, z: 0, visibility: 0.2 };
     const r = compareLandmarkPoses(buildLm(), b);
     expect(r.skipped).toContain("calf:L");
+  });
+});
+
+describe("computeContactClearances (#90)", () => {
+  // 原点のボーンに、指定 Y のスキン頂点を紐づけた簡易 SkinnedMesh。
+  // ボーンを原点に固定し高さは頂点側で表現する（bind を identity に保つ）。
+  const buildFootRig = (kneeY: number) => {
+    const root = new THREE.Group();
+    const leg = new THREE.Bone();
+    leg.name = "mixamorig:LeftLeg";
+    root.add(leg);
+    root.updateMatrixWorld(true);
+    const geom = new THREE.BufferGeometry();
+    const pos = new Float32Array([0, kneeY, 0, 0.05, kneeY + 0.02, 0]);
+    geom.setAttribute("position", new THREE.BufferAttribute(pos, 3));
+    geom.setAttribute(
+      "skinIndex",
+      new THREE.BufferAttribute(new Uint16Array([0, 0, 0, 0, 0, 0, 0, 0]), 4)
+    );
+    geom.setAttribute(
+      "skinWeight",
+      new THREE.BufferAttribute(new Float32Array([1, 0, 0, 0, 1, 0, 0, 0]), 4)
+    );
+    const mesh = new THREE.SkinnedMesh(geom, new THREE.MeshBasicMaterial());
+    mesh.bind(new THREE.Skeleton([leg]));
+    root.add(mesh);
+    root.updateMatrixWorld(true);
+    return root;
+  };
+
+  it("marks a grounded part as grounded (clearance ≈ 0)", () => {
+    const root = buildFootRig(-1); // knee vertices at floor y=-1
+    const res = computeContactClearances(root, ["knee:L"], -1);
+    expect(res).toHaveLength(1);
+    expect(res[0].clearanceM).toBeLessThan(0.05);
+    expect(res[0].grounded).toBe(true);
+  });
+
+  it("flags a floating part", () => {
+    const root = buildFootRig(-0.7); // knee vertices 30cm above floor
+    const res = computeContactClearances(root, ["knee:L"], -1);
+    expect(res[0].clearanceM).toBeGreaterThan(0.25);
+    expect(res[0].grounded).toBe(false);
+  });
+
+  it("skips unknown parts", () => {
+    const root = buildFootRig(-1);
+    expect(computeContactClearances(root, ["nonsense"], -1)).toHaveLength(0);
+  });
+});
+
+describe("checkPalmsFlat (#90)", () => {
+  // 平面的な点群を持つ Hand メッシュ。normal 方向で厚みを制御
+  const buildHandRig = (normal: THREE.Vector3) => {
+    const root = new THREE.Group();
+    const hand = new THREE.Bone();
+    hand.name = "mixamorig:LeftHand";
+    root.add(hand);
+    // normal に直交する 2 軸で広がり、normal 方向に薄い点群
+    const u = new THREE.Vector3(1, 0, 0);
+    if (Math.abs(normal.dot(u)) > 0.9) u.set(0, 1, 0);
+    const e1 = new THREE.Vector3().crossVectors(normal, u).normalize();
+    const e2 = new THREE.Vector3().crossVectors(normal, e1).normalize();
+    const pts: number[] = [];
+    for (let a = -2; a <= 2; a++)
+      for (let b = -2; b <= 2; b++) {
+        const p = e1
+          .clone()
+          .multiplyScalar(a * 0.03)
+          .add(e2.clone().multiplyScalar(b * 0.03));
+        pts.push(p.x, p.y, p.z);
+      }
+    const n = pts.length / 3;
+    const geom = new THREE.BufferGeometry();
+    geom.setAttribute("position", new THREE.BufferAttribute(new Float32Array(pts), 3));
+    geom.setAttribute("skinIndex", new THREE.BufferAttribute(new Uint16Array(n * 4), 4));
+    geom.setAttribute(
+      "skinWeight",
+      new THREE.BufferAttribute(
+        new Float32Array(Array.from({ length: n }, () => [1, 0, 0, 0]).flat()),
+        4
+      )
+    );
+    const mesh = new THREE.SkinnedMesh(geom, new THREE.MeshBasicMaterial());
+    mesh.bind(new THREE.Skeleton([hand]));
+    root.add(mesh);
+    root.updateMatrixWorld(true);
+    return root;
+  };
+
+  it("passes a horizontal hand (palm/back parallel to floor)", () => {
+    const root = buildHandRig(new THREE.Vector3(0, 1, 0)); // normal vertical = flat
+    const res = checkPalmsFlat(root, ["left"]);
+    expect(res).toHaveLength(1);
+    expect(res[0].tiltDeg).toBeLessThan(10);
+    expect(res[0].flat).toBe(true);
+  });
+
+  it("fails a vertical hand (fingertip stand: slab normal horizontal)", () => {
+    const root = buildHandRig(new THREE.Vector3(0, 0, 1)); // normal horizontal = tilted
+    const res = checkPalmsFlat(root, ["left"]);
+    expect(res[0].tiltDeg).toBeGreaterThan(60);
+    expect(res[0].flat).toBe(false);
   });
 });

@@ -105,6 +105,37 @@ for (const pose of poses) {
     }
   }
 
+  // 接地ゲート（#90）: 指定部位の関節ボーンが床に着いているか
+  const floating = (check.contacts ?? []).filter((c) => !c.grounded);
+  if ((check.contacts ?? []).length === 0) {
+    console.log("  接地:       指定なし");
+  } else if (floating.length === 0) {
+    console.log(`  接地:       違反 0（${check.contacts.length} 部位すべて接地）`);
+    if (process.env.VERBOSE)
+      for (const c of check.contacts)
+        console.log(`    ${c.part.padEnd(8)} ${(c.clearanceM * 100).toFixed(1)}cm`);
+  } else {
+    violation = true;
+    console.log(`  接地:       違反 ${floating.length} 件`);
+    for (const c of floating) {
+      console.log(`    ${c.part.padEnd(8)} 床から ${(c.clearanceM * 100).toFixed(1)}cm 浮き`);
+    }
+  }
+
+  // 手の向きゲート（#90）: 接地手の手のひらが水平か（指先立ち検出）
+  const tilted = (check.palms ?? []).filter((p) => !p.flat);
+  if ((check.palms ?? []).length === 0) {
+    console.log("  手の向き:   指定なし");
+  } else if (tilted.length === 0) {
+    console.log(`  手の向き:   違反 0（${check.palms.length} 手すべて水平）`);
+  } else {
+    violation = true;
+    console.log(`  手の向き:   違反 ${tilted.length} 件`);
+    for (const p of tilted) {
+      console.log(`    ${p.side.padEnd(5)} 傾き ${p.tiltDeg.toFixed(0)}°（指先立ち疑い）`);
+    }
+  }
+
   // 指標A: レンダー再推定 vs 実写真。
   // 単一視点では自己遮蔽でセグメントが除外されやすいため（四つ這いの正面等）、
   // 複数視点のレンダーを推定し、セグメント単位でマージする（比較数が多い
