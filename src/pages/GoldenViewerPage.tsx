@@ -27,6 +27,7 @@ import {
   checkPalmsFlat,
   computeContactClearances,
   detectSelfPenetrations,
+  romLimitFor,
   type ContactClearance,
   type PalmCheck,
   type Penetration,
@@ -115,11 +116,28 @@ const sameRotations = (a: Rotations, b: Rotations): boolean => {
   });
 };
 
-const EULER_AXES: { index: 0 | 1 | 2; label: string }[] = [
-  { index: 0, label: "X" },
-  { index: 1, label: "Y" },
-  { index: 2, label: "Z" },
+const EULER_AXES: { index: 0 | 1 | 2; label: string; key: "x" | "y" | "z" }[] = [
+  { index: 0, label: "X", key: "x" },
+  { index: 1, label: "Y", key: "y" },
+  { index: 2, label: "Z", key: "z" },
 ];
+
+/** 軸の ROM 範囲を返す（テーブルに無いボーン/軸は ±180 で実質無制限） */
+const romRangeFor = (
+  stdName: string,
+  axis: "x" | "y" | "z"
+): { min: number; max: number } =>
+  romLimitFor(stdName)?.[axis] ?? { min: -180, max: 180 };
+
+/** リグを可動域内に制限する: ROM の min/max へクランプした値を返す */
+const clampAxisToRom = (
+  stdName: string,
+  axis: "x" | "y" | "z",
+  value: number
+): number => {
+  const range = romRangeFor(stdName, axis);
+  return Math.min(range.max, Math.max(range.min, value));
+};
 
 /**
  * ゴールデンポーズ簡易ビューア（#78）。ゴールデン JSON をマネキンへ直接適用し、
@@ -232,6 +250,38 @@ export function GoldenViewerPage() {
       setHistory((h) => pushHistory(h, before));
     };
     transformControls.addEventListener("dragging-changed", handleDraggingChanged);
+
+    // リグの制限（#93）: ギズモ操作中も ROM の範囲外へは動かせない。
+    // objectChange のたびに bind 相対 Euler を分解し、範囲外の軸をクランプして
+    // クォータニオンを組み直す（限界に達するとそれ以上回らない挙動になる）
+    const handleObjectChange = () => {
+      const bone = transformControls.object as THREE.Bone | undefined;
+      if (!bone) return;
+      const stdName = bone.userData.stdName as string | undefined;
+      const bind = initialQuatsRef.current.get(bone.name);
+      if (!stdName || !bind || !romLimitFor(stdName)) return;
+      const offset = bind.clone().invert().multiply(bone.quaternion);
+      const euler = new THREE.Euler().setFromQuaternion(offset, "XYZ");
+      const deg = [
+        THREE.MathUtils.radToDeg(euler.x),
+        THREE.MathUtils.radToDeg(euler.y),
+        THREE.MathUtils.radToDeg(euler.z),
+      ];
+      const clamped = EULER_AXES.map(({ index, key }) =>
+        clampAxisToRom(stdName, key, deg[index])
+      );
+      if (clamped.every((v, i) => Math.abs(v - deg[i]) < 1e-6)) return;
+      const clampedQuat = new THREE.Quaternion().setFromEuler(
+        new THREE.Euler(
+          THREE.MathUtils.degToRad(clamped[0]),
+          THREE.MathUtils.degToRad(clamped[1]),
+          THREE.MathUtils.degToRad(clamped[2]),
+          "XYZ"
+        )
+      );
+      bone.quaternion.copy(bind).multiply(clampedQuat);
+    };
+    transformControls.addEventListener("objectChange", handleObjectChange);
 
     // 編集モード（#93）: 関節マーカーへのレイキャストでボーン選択。
     // ギズモ回転や OrbitControls のカメラ回転を終えた mouseup でも click は発火する
@@ -351,6 +401,8 @@ export function GoldenViewerPage() {
           // 999 のままでギズモより奥・メッシュより手前を保てる
           marker.renderOrder = 999;
           bone.add(marker);
+          // ギズモの ROM クランプ（objectChange）で標準名を逆引きするために持たせる
+          bone.userData.stdName = stdName;
           editableBonesRef.current.set(actualName, { stdName, bone });
           markerMeshesRef.current.set(actualName, marker);
         }
@@ -397,6 +449,7 @@ export function GoldenViewerPage() {
       renderer.domElement.removeEventListener("click", handleMarkerClick);
       renderer.domElement.removeEventListener("pointerdown", handlePointerDown);
       transformControls.removeEventListener("dragging-changed", handleDraggingChanged);
+      transformControls.removeEventListener("objectChange", handleObjectChange);
       transformControls.dispose();
       // 関節マーカー（最大 ~20 個）の material と、共有 geometry を dispose する
       // (SPA 再訪のたびに GPU リソースがリークするのを防ぐ)
@@ -580,10 +633,16 @@ export function GoldenViewerPage() {
 
   const updateSelectedAxis = (axisIndex: 0 | 1 | 2, value: number) => {
     if (!selectedBone) return;
+    // リグの制限（#93）: ROM の範囲外へは動かせない
+    const clamped = clampAxisToRom(
+      selectedBone.stdName,
+      EULER_AXES[axisIndex].key,
+      value
+    );
     setRotationsState((prev) => {
       const cur = prev[selectedBone.stdName] ?? [0, 0, 0];
       const next: [number, number, number] = [...cur];
-      next[axisIndex] = value;
+      next[axisIndex] = clamped;
       return { ...prev, [selectedBone.stdName]: next };
     });
   };
@@ -705,33 +764,41 @@ export function GoldenViewerPage() {
             {selectedBone && selectedEuler ? (
               <div className="flex flex-col gap-1">
                 <p className="font-semibold">選択中: {selectedBone.stdName}</p>
-                {EULER_AXES.map(({ index, label }) => (
-                  <label key={label} className="flex items-center gap-2">
-                    <span className="w-3">{label}</span>
-                    <input
-                      type="range"
-                      min={-180}
-                      max={180}
-                      step={0.5}
-                      value={selectedEuler[index]}
-                      onPointerDown={beginAxisEdit}
-                      onPointerUp={commitAxisEdit}
-                      onChange={(e) => updateSelectedAxis(index, Number(e.target.value))}
-                      className="flex-1"
-                    />
-                    <input
-                      type="number"
-                      min={-180}
-                      max={180}
-                      step={0.5}
-                      value={selectedEuler[index]}
-                      onFocus={beginAxisEdit}
-                      onBlur={commitAxisEdit}
-                      onChange={(e) => updateSelectedAxis(index, Number(e.target.value))}
-                      className="w-16 text-gray-800 rounded px-1"
-                    />
-                  </label>
-                ))}
+                {EULER_AXES.map(({ index, label, key }) => {
+                  // リグの制限（#93）: スライダー範囲自体を ROM に合わせる
+                  const range = romRangeFor(selectedBone.stdName, key);
+                  return (
+                    <label key={label} className="flex items-center gap-2">
+                      <span className="w-3">{label}</span>
+                      <input
+                        type="range"
+                        min={range.min}
+                        max={range.max}
+                        step={0.5}
+                        value={selectedEuler[index]}
+                        onPointerDown={beginAxisEdit}
+                        onPointerUp={commitAxisEdit}
+                        onChange={(e) =>
+                          updateSelectedAxis(index, Number(e.target.value))
+                        }
+                        className="flex-1"
+                      />
+                      <input
+                        type="number"
+                        min={range.min}
+                        max={range.max}
+                        step={0.5}
+                        value={selectedEuler[index]}
+                        onFocus={beginAxisEdit}
+                        onBlur={commitAxisEdit}
+                        onChange={(e) =>
+                          updateSelectedAxis(index, Number(e.target.value))
+                        }
+                        className="w-16 text-gray-800 rounded px-1"
+                      />
+                    </label>
+                  );
+                })}
               </div>
             ) : (
               <p className="text-white/50">未選択</p>
