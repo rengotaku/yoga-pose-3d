@@ -41,8 +41,17 @@ const BUILD_SHA = typeof __GIT_SHA__ !== "undefined" ? __GIT_SHA__ : "dev";
 /** 床グリッドの Y 位置（PoseViewer3D と同値） */
 const FLOOR_Y = -1;
 
-/** 編集モード（#93）のボーンマーカー色・サイズ */
-const EDIT_MARKER_COLOR = 0x38bdf8;
+/** 編集モード（#93）のボーンマーカー色・サイズ。色は部位系統ごとに分ける */
+const EDIT_MARKER_GROUPS = [
+  { key: "arm", label: "腕系", color: 0x38bdf8, pattern: /Shoulder|Arm|Hand/ },
+  { key: "leg", label: "脚系", color: 0x4ade80, pattern: /Leg|Foot|Toe/ },
+  { key: "head", label: "頭・首", color: 0xf472b6, pattern: /Neck|Head/ },
+  { key: "torso", label: "胴体系", color: 0xc084fc, pattern: /./ }, // Hips / Spine*
+] as const;
+/** 標準ボーン名から部位系統色を引く（先頭一致優先。torso が包括デフォルト） */
+const markerColorFor = (stdName: string): number =>
+  EDIT_MARKER_GROUPS.find((g) => g.pattern.test(stdName))?.color ??
+  EDIT_MARKER_GROUPS[3].color;
 const EDIT_MARKER_SELECTED_COLOR = 0xf59e0b;
 const EDIT_MARKER_RADIUS = 0.025;
 
@@ -295,16 +304,18 @@ export function GoldenViewerPage() {
           const actualName = resolveBoneName(stdName, boneNames);
           const bone = actualName ? boneMap.get(actualName) : undefined;
           if (!bone || !actualName) continue;
+          const baseColor = markerColorFor(stdName);
           const marker = new THREE.Mesh(
             markerGeometry,
             new THREE.MeshBasicMaterial({
-              color: EDIT_MARKER_COLOR,
+              color: baseColor,
               transparent: true,
               opacity: 0.85,
               depthTest: false,
             })
           );
           marker.userData.actualName = actualName;
+          marker.userData.baseColor = baseColor;
           marker.visible = editModeRef.current;
           // メッシュに埋まる肩・肘・股関節等でも常時見えるよう深度テストを切る。
           // ギズモの renderOrder は Infinity（TransformControlsGizmo 既定）なので
@@ -465,7 +476,7 @@ export function GoldenViewerPage() {
       material.color.set(
         actualName === selectedBone?.actualName
           ? EDIT_MARKER_SELECTED_COLOR
-          : EDIT_MARKER_COLOR
+          : (marker.userData.baseColor as number)
       );
     }
   }, [selectedBone]);
@@ -637,6 +648,19 @@ export function GoldenViewerPage() {
             <p className="text-white/70">
               関節マーカーをクリックして選択 → ギズモかスライダーで回転
             </p>
+            <div className="flex flex-wrap gap-x-3 gap-y-1 text-white/70">
+              {EDIT_MARKER_GROUPS.map((g) => (
+                <span key={g.key} className="flex items-center gap-1">
+                  <span
+                    className="inline-block w-2.5 h-2.5 rounded-full"
+                    style={{
+                      backgroundColor: `#${g.color.toString(16).padStart(6, "0")}`,
+                    }}
+                  />
+                  {g.label}
+                </span>
+              ))}
+            </div>
             {selectedBone && selectedEuler ? (
               <div className="flex flex-col gap-1">
                 <p className="font-semibold">選択中: {selectedBone.stdName}</p>
