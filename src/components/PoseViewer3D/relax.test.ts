@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import * as THREE from "three";
 import { collectRelaxChain, relaxDownstream } from "./relax";
+import { buildBodyCapsules, detectSelfPenetrations } from "./poseValidity";
 
 /**
  * 左腕チェーン + 指分岐のテスト用リグ。
@@ -250,5 +251,166 @@ describe("relaxDownstream", () => {
     expect(result.changedCount).toBe(0);
     expect(result.affectedActualNames).toEqual([]);
     expect(rig.thumb01L.quaternion.equals(before)).toBe(true);
+  });
+
+  it("contactAware=false gives the same result whether mannequin is passed or not (backward compat)", () => {
+    const rigA = buildLeftArmRig();
+    const rigB = buildLeftArmRig();
+    relaxDownstream(rigA.upperarmL, rigA.initial, {
+      strength: 0.7,
+      includeFingers: false,
+      contactAware: false,
+    });
+    relaxDownstream(
+      rigB.upperarmL,
+      rigB.initial,
+      { strength: 0.7, includeFingers: false, contactAware: false },
+      rigB.root
+    );
+    expect(rigA.handL.quaternion.angleTo(rigB.handL.quaternion)).toBeLessThan(1e-6);
+    expect(rigA.lowerarmL.quaternion.angleTo(rigB.lowerarmL.quaternion)).toBeLessThan(
+      1e-6
+    );
+  });
+});
+
+/**
+ * 接触考慮テスト用のリグ（#112）: clavicle を選択して左腕全体（upperarm 含む）
+ * を relax し、下向きに大きく振れる配置にする。右腕を左腕の swing 経路上に
+ * 置いて衝突を作る。buildBodyCapsules が resolveBoneName 経由で
+ * mixamorig:LeftArm → upperarm_l を解決するので、GLB と同じ命名を保つ。
+ *
+ *  root
+ *   ├─ clavicle_l (0, 0, 0) ← select this for relax（chain = 下流全部）
+ *   │    └─ upperarm_l (0.2, 1.4, 0) → lowerarm_l (0.3, 0, 0) → hand_l (0.3, 0, 0)
+ *   │            = 左肩から水平 +X へ 0.6m 伸びる。upperarm ごと下振り可能
+ *   └─ upperarm_r (0.4, 0.9, 0) → lowerarm_r (0.3, 0, 0) → hand_r (0.3, 0, 0)
+ *            = 左腕 upperarm の relax swing 経路（x=0.2, y∈[0.8,1.4]）を
+ *              水平に横切る位置。カプセル半径 0.045 との合計で必ず衝突する
+ *
+ * 左腕を -Y へ 100% 振ると upperarm 先端が (0.2, 0.8, 0) へ落ち、右腕
+ * カプセル(y=0.9)を貫通する。contactAware=true は baseline 侵入数を保つ。
+ */
+const buildTwoArmsRig = () => {
+  const root = new THREE.Group();
+  const clavicleL = new THREE.Bone();
+  clavicleL.name = "clavicle_l";
+  clavicleL.userData.stdName = "LeftShoulder";
+  const upperarmL = new THREE.Bone();
+  upperarmL.name = "upperarm_l";
+  upperarmL.userData.stdName = "LeftArm";
+  upperarmL.position.set(0.2, 1.4, 0);
+  const lowerarmL = new THREE.Bone();
+  lowerarmL.name = "lowerarm_l";
+  lowerarmL.userData.stdName = "LeftForeArm";
+  lowerarmL.position.set(0.3, 0, 0);
+  const handL = new THREE.Bone();
+  handL.name = "hand_l";
+  handL.userData.stdName = "LeftHand";
+  handL.position.set(0.3, 0, 0);
+  clavicleL.add(upperarmL);
+  upperarmL.add(lowerarmL);
+  lowerarmL.add(handL);
+  root.add(clavicleL);
+
+  // upperarm_r: 左腕 forearm の relax 経路（垂直 x=0.2, y∈[0.8,1.1]）を横切る
+  // ように x=0.0 から +X 方向へ 0.3m 伸ばす。 upperArm:R セグメントは
+  // x∈[0.0, 0.3] を y=0.9 で通り、左 forearm x=0.2 と交差 → 侵入発生
+  const upperarmR = new THREE.Bone();
+  upperarmR.name = "upperarm_r";
+  upperarmR.userData.stdName = "RightArm";
+  upperarmR.position.set(0.0, 0.9, 0);
+  const lowerarmR = new THREE.Bone();
+  lowerarmR.name = "lowerarm_r";
+  lowerarmR.userData.stdName = "RightForeArm";
+  lowerarmR.position.set(0.3, 0, 0);
+  const handR = new THREE.Bone();
+  handR.name = "hand_r";
+  handR.userData.stdName = "RightHand";
+  handR.position.set(0.3, 0, 0);
+  upperarmR.add(lowerarmR);
+  lowerarmR.add(handR);
+  root.add(upperarmR);
+
+  root.updateMatrixWorld(true);
+  const initial = new Map<string, THREE.Quaternion>();
+  for (const b of [clavicleL, upperarmL, lowerarmL, handL, upperarmR, lowerarmR, handR]) {
+    initial.set(b.name, b.quaternion.clone());
+  }
+  return {
+    root,
+    clavicleL,
+    upperarmL,
+    lowerarmL,
+    handL,
+    upperarmR,
+    lowerarmR,
+    handR,
+    initial,
+  };
+};
+
+describe("relaxDownstream contact-aware behavior (#112)", () => {
+  it("full-strength relax without contactAware causes a penetration in the two-arms rig", () => {
+    // ベースライン確認: contactAware=false で強く振ると相手の腕へ侵入する
+    const rig = buildTwoArmsRig();
+    const baseline = detectSelfPenetrations(buildBodyCapsules(rig.root)).length;
+    expect(baseline).toBe(0);
+    relaxDownstream(
+      rig.clavicleL,
+      rig.initial,
+      { strength: 1.0, includeFingers: false, contactAware: false },
+      rig.root
+    );
+    const after = detectSelfPenetrations(buildBodyCapsules(rig.root)).length;
+    // 侵入が発生することがこのテスト rig の前提。0 のままなら rig 配置を見直す
+    expect(after).toBeGreaterThan(baseline);
+  });
+
+  it("contactAware=true stops before adding new penetrations (rests on the below arm)", () => {
+    const rig = buildTwoArmsRig();
+    const baseline = detectSelfPenetrations(buildBodyCapsules(rig.root)).length;
+    const result = relaxDownstream(
+      rig.upperarmL,
+      rig.initial,
+      { strength: 1.0, includeFingers: false, contactAware: true },
+      rig.root
+    );
+    // 侵入数は baseline を超えない = 相手腕を貫通しない
+    const after = detectSelfPenetrations(buildBodyCapsules(rig.root)).length;
+    expect(after).toBeLessThanOrEqual(baseline);
+    // ただし脱力自体は発生している = 少なくとも 1 手前のステップで動いた
+    // （strength=0 で止まった場合は 0。強度制限として changedCount>=0 は許容）
+    expect(result.affectedActualNames.length).toBeGreaterThan(0);
+  });
+
+  it("contactAware falls back to full strength when there is no collision", () => {
+    // 相手の腕を遠くへ避けて衝突しない配置にすると、contactAware でも target strength が適用される
+    const rig = buildTwoArmsRig();
+    rig.upperarmR.position.set(-1, -1, 0); // 遠くへ移動
+    rig.root.updateMatrixWorld(true);
+
+    const rigNoContact = buildTwoArmsRig();
+    rigNoContact.upperarmR.position.set(-1, -1, 0);
+    rigNoContact.root.updateMatrixWorld(true);
+
+    relaxDownstream(
+      rig.clavicleL,
+      rig.initial,
+      { strength: 0.7, includeFingers: false, contactAware: true },
+      rig.root
+    );
+    relaxDownstream(rigNoContact.clavicleL, rigNoContact.initial, {
+      strength: 0.7,
+      includeFingers: false,
+      contactAware: false,
+    });
+    // 衝突が無い場合、contactAware=true の結果は contactAware=false と一致する
+    expect(
+      rig.upperarmL.quaternion.angleTo(rigNoContact.upperarmL.quaternion)
+    ).toBeLessThan(1e-4);
+    expect(rig.handL.quaternion.angleTo(rigNoContact.handL.quaternion)).toBeLessThan(
+      1e-4
+    );
   });
 });

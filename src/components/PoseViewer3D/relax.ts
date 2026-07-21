@@ -1,9 +1,10 @@
 import * as THREE from "three";
 import { BONE_ALIASES } from "./retarget";
 import { clampAxisToRom } from "./romClamp";
+import { buildBodyCapsules, detectSelfPenetrations } from "./poseValidity";
 
 /**
- * 脱力モード（#110）: 選択ボーン以下の駆動対象ボーンを重力方向へ整列させ、
+ * 脱力モード（#110・#112）: 選択ボーン以下の駆動対象ボーンを重力方向へ整列させ、
  * 既存 ROM テーブルで軸クランプする静的ヒューリスティック。物理シミュや
  * IK ソルバを使わず three.js の Bone/Quaternion 操作だけで完結する。
  *
@@ -17,12 +18,18 @@ import { clampAxisToRom } from "./romClamp";
  *  6. `bind⁻¹ * desiredLocal` を Euler XYZ 分解し軸ごとに ROM クランプ
  *  7. `bone.quaternion = bind * clampedOffset` を書き込み world matrix 更新
  *
+ * 接触考慮（#112）: `contactAware=true` + `mannequin` 指定時は、target strength
+ * まで N ステップに区切って段階適用し、各ステップで `detectSelfPenetrations` を
+ * 呼んで baseline より侵入ペアが増えたら 1 手前で確定する（下の脚に載って止まる）。
+ *
  * 落とし穴（codex 診断 + 実装で対処）:
  *  - 親を先に更新しないと子の world 位置が古い → 親→子順の chain 収集
  *  - 分岐ボーン（Hand → 5 指）で child 方向が一意に決まらない → 分岐は回さず
  *    子孫に処理を委譲する（Hand は動かず各指が独立に垂れる）
  *  - 重力方向だけではツイストが決まらない → 最小 swing 左乗算で既存ツイスト維持
  *  - Euler 分解特異点付近のジャンプ → strength 上限（既定 0.7）で緩和
+ *  - 段階適用は各ステップで originalQuats から再構築する（前ステップ状態から
+ *    増分を積むと swing 基準が変わり非線形にドリフトする）
  */
 
 export type RelaxOptions = {
@@ -30,7 +37,15 @@ export type RelaxOptions = {
   strength: number;
   /** 指ボーン（Thumb/Index/Middle/Ring/Pinky）を対象に含めるか */
   includeFingers: boolean;
+  /**
+   * 相手身体部位との侵入が baseline より増えないところまでで止める（既定 true）。
+   * false なら target strength を一発で適用する（従来 #110 挙動）。
+   */
+  contactAware?: boolean;
 };
+
+/** 接触考慮ステップ分割数（#112）。10 = 目標 strength の 1/10 刻みで探索 */
+export const RELAX_CONTACT_STEPS = 10;
 
 export type RelaxResult = {
   /** 実際に quaternion が変化したボーン数（変化 = クランプ結果が現在値と異なる） */
@@ -132,46 +147,91 @@ const clampLocalToRom = (
  * 呼ぶ。呼び出し側は完了後に `exportGoldenRotations()` で最終 `Rotations` を
  * 生成し、履歴と state へ 1 回だけ反映する（適用中フラグでゲート debounce を
  * 抑止すること）。
+ *
+ * @param mannequin 接触考慮（`contactAware=true`）の baseline 検出に必要な
+ *                  身体全体のルート。未指定 or `contactAware=false` の場合は
+ *                  target strength を一発適用する（#110 挙動）。
  */
 export const relaxDownstream = (
   selected: THREE.Bone,
   initialQuaternions: Map<string, THREE.Quaternion>,
-  opts: RelaxOptions
+  opts: RelaxOptions,
+  mannequin?: THREE.Object3D
 ): RelaxResult => {
   const strength = Math.max(0, Math.min(1, opts.strength));
   const chain = collectRelaxChain(selected, opts);
   const affectedActualNames: string[] = [];
-  let changedCount = 0;
 
-  for (const bone of chain) {
-    const stdName = stdNameOf(bone);
-    const bind = initialQuaternions.get(bone.name);
-    if (!bind || !bone.parent) continue;
+  // chain 全体の原始 quaternion をスナップショット（段階適用時に毎回ここから
+  // 再構築する。前ステップ状態から差分を積むと swing 基準が変わり非線形化する）
+  const originalQuats = new Map<string, THREE.Quaternion>();
+  for (const bone of chain) originalQuats.set(bone.name, bone.quaternion.clone());
 
-    const dir = mainChildWorldDirection(bone, opts.includeFingers);
-    if (!dir) continue; // 分岐/葉ボーンは回さず子孫に処理を委譲
+  /** chain 全体を originalQuats へ復元する（updateMatrixWorld も伴う） */
+  const restoreOriginal = (): void => {
+    for (const bone of chain) {
+      const orig = originalQuats.get(bone.name);
+      if (orig) bone.quaternion.copy(orig);
+    }
+    if (chain.length > 0) chain[0].updateMatrixWorld(true);
+  };
 
-    const target = dir.clone().lerp(GRAVITY_WORLD, strength);
-    if (target.lengthSq() < 1e-12) continue;
-    target.normalize();
+  /** 指定 strength で chain 全体を relax 適用する（副作用: bone.quaternion 書換） */
+  const applyAtStrength = (s: number): void => {
+    if (s <= 0) return;
+    for (const bone of chain) {
+      const stdName = stdNameOf(bone);
+      const bind = initialQuaternions.get(bone.name);
+      if (!bind || !bone.parent) continue;
 
-    // 現在方向 → 目標方向 の最小 swing を計算し、現在 world quat に左乗算
-    // → 既存ツイスト（軸まわり回転）を維持したまま swing だけを追加できる。
-    const swing = new THREE.Quaternion().setFromUnitVectors(dir, target);
-    const currentWorldQuat = bone.getWorldQuaternion(new THREE.Quaternion());
-    const desiredWorld = swing.multiply(currentWorldQuat);
-    const parentWorldQuat = bone.parent.getWorldQuaternion(new THREE.Quaternion());
-    const desiredLocal = parentWorldQuat.invert().multiply(desiredWorld);
+      const dir = mainChildWorldDirection(bone, opts.includeFingers);
+      if (!dir) continue; // 分岐/葉ボーンは回さず子孫に処理を委譲
 
-    const clampedLocal = clampLocalToRom(stdName, bind, desiredLocal);
+      const target = dir.clone().lerp(GRAVITY_WORLD, s);
+      if (target.lengthSq() < 1e-12) continue;
+      target.normalize();
 
-    // 変化があった場合のみカウント（no-op でも affectedActualNames には積む）
-    if (!clampedLocal.equals(bone.quaternion)) {
+      // 現在方向 → 目標方向 の最小 swing を計算し、現在 world quat に左乗算
+      // → 既存ツイスト（軸まわり回転）を維持したまま swing だけを追加できる。
+      const swing = new THREE.Quaternion().setFromUnitVectors(dir, target);
+      const currentWorldQuat = bone.getWorldQuaternion(new THREE.Quaternion());
+      const desiredWorld = swing.multiply(currentWorldQuat);
+      const parentWorldQuat = bone.parent.getWorldQuaternion(new THREE.Quaternion());
+      const desiredLocal = parentWorldQuat.invert().multiply(desiredWorld);
+      const clampedLocal = clampLocalToRom(stdName, bind, desiredLocal);
+
       bone.quaternion.copy(clampedLocal);
       bone.updateMatrixWorld(true);
-      changedCount++;
     }
-    affectedActualNames.push(bone.name);
+  };
+
+  const contactAware = opts.contactAware !== false && mannequin !== undefined;
+  if (!contactAware) {
+    applyAtStrength(strength);
+  } else {
+    // baseline penetration 数を記録し、増えたら 1 手前の strength に戻して終了
+    const baseline = detectSelfPenetrations(buildBodyCapsules(mannequin)).length;
+    let bestStrength = 0;
+    for (let i = 1; i <= RELAX_CONTACT_STEPS; i++) {
+      const s = (i / RELAX_CONTACT_STEPS) * strength;
+      restoreOriginal();
+      applyAtStrength(s);
+      const now = detectSelfPenetrations(buildBodyCapsules(mannequin)).length;
+      if (now > baseline) break;
+      bestStrength = s;
+    }
+    restoreOriginal();
+    applyAtStrength(bestStrength);
+  }
+
+  // 変化件数と対象名を集計（no-op も affectedActualNames には積む）
+  let changedCount = 0;
+  for (const bone of chain) {
+    const orig = originalQuats.get(bone.name);
+    if (orig && !orig.equals(bone.quaternion)) changedCount++;
+    if (mainChildWorldDirection(bone, opts.includeFingers) !== null) {
+      affectedActualNames.push(bone.name);
+    }
   }
 
   return { changedCount, affectedActualNames };
