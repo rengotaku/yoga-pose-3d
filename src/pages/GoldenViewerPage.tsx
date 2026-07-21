@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { TransformControls } from "three/addons/controls/TransformControls.js";
@@ -34,7 +34,7 @@ import {
   type RomViolation,
 } from "../components/PoseViewer3D/poseValidity";
 import { clampAxisToRom, romRangeFor } from "../components/PoseViewer3D/romClamp";
-import { relaxDownstream } from "../components/PoseViewer3D/relax";
+import { collectRelaxChain, relaxDownstream } from "../components/PoseViewer3D/relax";
 import { calculateCameraFit } from "../components/PoseViewer3D/cameraFit";
 import { GOLDEN_POSES, goldenDataHash } from "./goldenPoses";
 
@@ -95,7 +95,7 @@ const GATE_DEBOUNCE_MS = 300;
 
 type Rotations = Record<string, [number, number, number]>;
 
-type SelectedBone = { actualName: string; stdName: string };
+type SelectedBone = { actualName: string; stdName: string; bone: THREE.Bone };
 
 type GateReport = {
   romViolations: RomViolation[];
@@ -177,6 +177,8 @@ export function GoldenViewerPage() {
   // 脱力モード（#110）: 選択ボーン以下を重力方向へ整列するときの強度と、指を対象に含めるか
   const [relaxStrength, setRelaxStrength] = useState(0.7);
   const [relaxIncludeFingers, setRelaxIncludeFingers] = useState(false);
+  // 接触考慮（#112）: 侵入検出で strength を段階的に増やし他部位にあたる手前で止める
+  const [relaxContactAware, setRelaxContactAware] = useState(true);
 
   useEffect(() => {
     editModeRef.current = editMode;
@@ -310,7 +312,7 @@ export function GoldenViewerPage() {
       if (hits.length === 0) return;
       const actualName = hits[0].object.userData.actualName as string;
       const info = editableBonesRef.current.get(actualName);
-      if (info) setSelectedBone({ actualName, stdName: info.stdName });
+      if (info) setSelectedBone({ actualName, stdName: info.stdName, bone: info.bone });
     };
     renderer.domElement.addEventListener("click", handleMarkerClick);
 
@@ -672,18 +674,43 @@ export function GoldenViewerPage() {
     setTimeout(() => setCopyStatus("idle"), 2000);
   };
 
-  // 脱力モード（#110）: 選択ボーン以下を重力方向へ整列（bone の副作用を最終状態で
-  // 1 手だけエクスポート → 1 履歴エントリに束ねる。ROM は内部でクランプ済み）
+  // 脱力対象の下流ボーン集合（#112）。selectedBone に bone 参照を含めているので
+  // render 中に ref アクセスなしで chain を計算できる。マーカー拡大 useEffect と
+  // 対象件数表示で参照する。
+  const relaxTargetSet = useMemo(() => {
+    const set = new Set<string>();
+    if (!selectedBone) return set;
+    const chain = collectRelaxChain(selectedBone.bone, {
+      includeFingers: relaxIncludeFingers,
+    });
+    for (const b of chain) set.add(b.name);
+    return set;
+  }, [selectedBone, relaxIncludeFingers]);
+
+  // 脱力対象マーカーを拡大表示（#112）。scale を state に応じて毎回上書き
+  useEffect(() => {
+    for (const [name, marker] of markerMeshesRef.current) {
+      marker.scale.setScalar(relaxTargetSet.has(name) ? 1.6 : 1.0);
+    }
+  }, [relaxTargetSet]);
+
+  // 脱力モード（#110・#112）: 選択ボーン以下を重力方向へ整列（bone の副作用を最終状態で
+  // 1 手だけエクスポート → 1 履歴エントリに束ねる。ROM は内部でクランプ済み）。
+  // contactAware=true (既定) では侵入増を検出したところで止めるため mannequin を渡す。
   const handleRelax = () => {
     const mannequin = mannequinRef.current;
     if (!selectedBone || !mannequin || !current) return;
-    const info = editableBonesRef.current.get(selectedBone.actualName);
-    if (!info) return;
     const before = rotationsState;
-    const result = relaxDownstream(info.bone, initialQuatsRef.current, {
-      strength: relaxStrength,
-      includeFingers: relaxIncludeFingers,
-    });
+    const result = relaxDownstream(
+      selectedBone.bone,
+      initialQuatsRef.current,
+      {
+        strength: relaxStrength,
+        includeFingers: relaxIncludeFingers,
+        contactAware: relaxContactAware,
+      },
+      mannequin
+    );
     if (result.changedCount === 0) return; // 分岐 or 葉のみ = 変化なしなら履歴を積まない
     const after = exportGoldenRotations(
       mannequin,
@@ -827,14 +854,24 @@ export function GoldenViewerPage() {
                     </label>
                   );
                 })}
-                {/* 脱力モード（#110）: 選択ボーン以下を重力方向へ整列 + ROM 内クランプ。
-                    apply-and-fix なので押した瞬間に確定（Undo で復元可能）。分岐 or 葉のみ
+                {/* 脱力モード（#110・#112）: 選択ボーン以下を重力方向へ整列 + ROM 内クランプ。
+                    apply-and-fix なので押した瞬間に確定（Undo で復元可能）。対象マーカーは
+                    拡大表示され、押す前に何が動くか視覚的に分かる。「接触考慮」ON なら
+                    他部位へ侵入する手前で止める（下の脚に載る等）。分岐 or 葉のみ = 対象0
                     ならボタンは押せても no-op で終わる（履歴も積まない）。 */}
                 <div className="flex flex-col gap-1 border-t border-white/20 pt-2 mt-1">
+                  <p
+                    className={
+                      relaxTargetSet.size > 0 ? "text-emerald-300" : "text-white/50"
+                    }
+                  >
+                    対象: {relaxTargetSet.size} 関節（マーカー拡大中）
+                  </p>
                   <button
                     type="button"
                     onClick={handleRelax}
-                    className="px-2 py-1 rounded bg-emerald-500 hover:bg-emerald-400 text-white font-medium"
+                    disabled={relaxTargetSet.size === 0}
+                    className="px-2 py-1 rounded bg-emerald-500 hover:bg-emerald-400 text-white font-medium disabled:bg-white/20 disabled:text-white/40"
                   >
                     🍃 下流を脱力
                   </button>
@@ -860,6 +897,16 @@ export function GoldenViewerPage() {
                       onChange={(e) => setRelaxIncludeFingers(e.target.checked)}
                     />
                     <span className="text-white/80">指を含める</span>
+                  </label>
+                  <label className="flex items-center gap-2">
+                    <input
+                      type="checkbox"
+                      checked={relaxContactAware}
+                      onChange={(e) => setRelaxContactAware(e.target.checked)}
+                    />
+                    <span className="text-white/80">
+                      接触考慮（下の部位に載って止まる）
+                    </span>
                   </label>
                 </div>
               </div>
