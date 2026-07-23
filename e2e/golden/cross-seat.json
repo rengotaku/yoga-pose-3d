@@ -1,6 +1,6 @@
 {
   "pose": "cross-seat",
-  "description": "安楽座（あぐら）。両手を胸の前で交差、顔は上向き",
+  "description": "安楽座（あぐら）。左足が上、右足が下の非対称配置。両手を胸の前で交差、顔は上向き",
   "tier": "dev",
   "rotations": {
     "LeftUpLeg": [
@@ -14,13 +14,13 @@
       -75
     ],
     "LeftLeg": [
-      118,
-      0,
+      125,
+      -25,
       0
     ],
     "RightLeg": [
-      128,
-      0,
+      130,
+      20,
       0
     ],
     "LeftArm": [
