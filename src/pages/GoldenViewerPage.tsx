@@ -25,6 +25,8 @@ import {
   buildBodyCapsules,
   checkGoldenRom,
   checkPalmsFlat,
+  checkStability,
+  computeCOM,
   computeContactClearances,
   detectSelfPenetrations,
   romLimitFor,
@@ -32,10 +34,16 @@ import {
   type PalmCheck,
   type Penetration,
   type RomViolation,
+  type StabilityResult,
 } from "../components/PoseViewer3D/poseValidity";
 import { clampAxisToRom, romRangeFor } from "../components/PoseViewer3D/romClamp";
 import { collectRelaxChain, relaxDownstream } from "../components/PoseViewer3D/relax";
 import { calculateCameraFit } from "../components/PoseViewer3D/cameraFit";
+import {
+  createStabilityViz,
+  stabilityBandFor,
+  type StabilityViz,
+} from "../components/PoseViewer3D/stabilityViz";
 import { GOLDEN_POSES, goldenDataHash } from "./goldenPoses";
 
 /** ビルド識別子（#88）。vite の define が無い環境（vitest 等）は "dev" */
@@ -104,6 +112,13 @@ type GateReport = {
   palms: PalmCheck[];
 };
 
+/** 重心/支持面の可視化（#119）に使う直近の計算結果。comY は COM の実際の高さ
+ *  （`computeCOM` の world.y）で、マーカーの描画位置に使う */
+type StabilityView = {
+  result: StabilityResult;
+  comY: number;
+};
+
 const cloneRotations = (rotations: Rotations): Rotations =>
   Object.fromEntries(
     Object.entries(rotations).map(([k, v]) => [k, [...v] as [number, number, number]])
@@ -140,8 +155,14 @@ export function GoldenViewerPage() {
   const initialQuatsRef = useRef<Map<string, THREE.Quaternion>>(new Map());
   const cameraRef = useRef<THREE.PerspectiveCamera | null>(null);
   const controlsRef = useRef<OrbitControls | null>(null);
+  const sceneRef = useRef<THREE.Scene | null>(null);
   const [selected, setSelected] = useState<string>(GOLDEN_POSES[0]?.pose ?? "");
   const [status, setStatus] = useState<"loading" | "ready" | "error">("loading");
+
+  // --- 重心/支持面の可視化（#119） ---
+  const stabilityVizRef = useRef<StabilityViz | null>(null);
+  const [showStability, setShowStability] = useState(false);
+  const [stabilityView, setStabilityView] = useState<StabilityView | null>(null);
 
   // --- 編集モード（#93） ---
   const transformControlsRef = useRef<TransformControls | null>(null);
@@ -193,6 +214,17 @@ export function GoldenViewerPage() {
 
     const scene = new THREE.Scene();
     scene.background = new THREE.Color(0x334155); // slate-700
+    sceneRef.current = scene;
+
+    // 重心/支持面ビューア（#119）: トグル ON/OFF に合わせて mount/unmount する
+    // ファクトリをここで 1 度だけ作る（骨格ロードやポーズ切替では作り直さない）
+    const stabilityViz = createStabilityViz();
+    stabilityVizRef.current = stabilityViz;
+    if (import.meta.env.DEV) {
+      (window as unknown as Record<string, unknown>).__stabilityDebug = {
+        isMounted: () => stabilityViz.isMounted(),
+      };
+    }
 
     const camera = new THREE.PerspectiveCamera(
       45,
@@ -474,6 +506,13 @@ export function GoldenViewerPage() {
       mannequinRef.current = null;
       editableBonesRef.current = new Map();
       markerMeshesRef.current = new Map();
+      // 重心/支持面ビューア（#119）: トグル状態に関わらず必ず dispose する
+      stabilityViz.unmount();
+      stabilityVizRef.current = null;
+      sceneRef.current = null;
+      if (import.meta.env.DEV) {
+        delete (window as unknown as Record<string, unknown>).__stabilityDebug;
+      }
     };
   }, []);
 
@@ -486,7 +525,14 @@ export function GoldenViewerPage() {
     applyGoldenRotations(mannequin, initialQuatsRef.current, golden);
     // 編集モード中はドラッグ確定のたびに視点・モデル位置が飛ぶため、
     // 接地とカメラ自動フィットは編集 OFF の時だけ行う（#93）
-    if (!editModeRef.current) groundMannequin(mannequin, FLOOR_Y);
+    if (!editModeRef.current) {
+      groundMannequin(mannequin, FLOOR_Y);
+      // 重心/支持面（#119）: 接地済みの姿勢で計算する
+      setStabilityView({
+        result: checkStability(mannequin, golden.contacts ?? [], FLOOR_Y),
+        comY: computeCOM(mannequin).world.y,
+      });
+    }
 
     // 診断フック（#88 dev 専用）: メインページの適用結果とボーン単位で
     // 突合するため、この画面の world 回転をエクスポートできるようにする
@@ -599,6 +645,12 @@ export function GoldenViewerPage() {
       contacts: computeContactClearances(mannequin, current.contacts ?? [], FLOOR_Y),
       palms: checkPalmsFlat(mannequin, current.palmsDown ?? []),
     });
+    // 重心/支持面（#119）: ボーン回転（ギズモ・スライダー・脱力・undo/redo）の
+    // たびに、ゲート再計算と同じタイミング（接地済み）で追従させる
+    setStabilityView({
+      result: checkStability(mannequin, current.contacts ?? [], FLOOR_Y),
+      comY: computeCOM(mannequin).world.y,
+    });
   }, [current, rotationsState]);
 
   useEffect(() => {
@@ -606,6 +658,24 @@ export function GoldenViewerPage() {
     const timer = setTimeout(recomputeGateReport, GATE_DEBOUNCE_MS);
     return () => clearTimeout(timer);
   }, [editMode, status, recomputeGateReport]);
+
+  // 重心/支持面ビューア（#119）: トグルに合わせて mount/unmount し、
+  // 最新の計算結果があれば描画へ反映する
+  useEffect(() => {
+    const scene = sceneRef.current;
+    const viz = stabilityVizRef.current;
+    if (!scene || !viz) return;
+    // stabilityView が無い（ロード中・未計算）状態では mount しない。
+    // チェックボックスは disabled にしているが、念のため二重に防ぐ
+    // （defense in depth）。無ければ (0,0,0) に安定扱いのマーカーが
+    // 表示され、「安定してる」と誤読される false PASS になるため。
+    if (!showStability || !stabilityView) {
+      viz.unmount();
+      return;
+    }
+    viz.mount(scene);
+    viz.update(stabilityView.result, stabilityView.comY, FLOOR_Y);
+  }, [showStability, stabilityView]);
 
   const handleUndo = () => {
     const result = undo(history, rotationsState);
@@ -760,6 +830,47 @@ export function GoldenViewerPage() {
         >
           編集{editMode ? ": ON" : ": OFF"}
         </button>
+        <label
+          className={`self-start flex items-center gap-2 px-3 py-1.5 rounded-md text-sm font-medium bg-white/80 text-gray-800 transition-colors ${
+            stabilityView === null
+              ? "opacity-50 cursor-not-allowed"
+              : "hover:bg-white cursor-pointer"
+          }`}
+          title={stabilityView === null ? "重心/支持面を計算中…" : undefined}
+        >
+          <input
+            type="checkbox"
+            checked={showStability}
+            disabled={stabilityView === null}
+            onChange={(e) => setShowStability(e.target.checked)}
+          />
+          重心/支持面を表示
+        </label>
+        {showStability && stabilityView && (
+          <div
+            data-testid="stability-overlay"
+            className="flex flex-col gap-1 bg-black/40 rounded-md p-2 text-white text-xs"
+          >
+            {stabilityView.result.supportPolygon.length < 3 ? (
+              <p className="text-red-300">重心/支持面: 支持面なし（不安定）</p>
+            ) : (
+              <p
+                className={
+                  stabilityBandFor(stabilityView.result.distanceToBoundaryM) === "safe"
+                    ? "text-emerald-300"
+                    : stabilityBandFor(stabilityView.result.distanceToBoundaryM) ===
+                        "warn"
+                      ? "text-amber-300"
+                      : "text-red-300"
+                }
+              >
+                重心/支持面: 境界まで{" "}
+                {stabilityView.result.distanceToBoundaryM.toFixed(2)}m
+                {stabilityView.result.distanceToBoundaryM < 0 ? "（はみ出し）" : ""}
+              </p>
+            )}
+          </div>
+        )}
         {editMode && (
           <div className="flex flex-col gap-2 bg-black/40 rounded-md p-2 text-white text-xs">
             <div className="flex flex-wrap gap-2">
