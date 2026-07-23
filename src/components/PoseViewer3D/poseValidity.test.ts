@@ -13,6 +13,12 @@ import {
   compareLandmarkPoses,
   SELF_PENETRATION,
   type SegmentCapsule,
+  BODY_SEGMENT_MASS,
+  STABILITY,
+  computeCOM,
+  computeSupportPolygon,
+  checkStability,
+  signedDistanceToPolygon,
 } from "./poseValidity";
 
 describe("romLimitFor", () => {
@@ -319,5 +325,264 @@ describe("checkPalmsFlat (#90)", () => {
     const res = checkPalmsFlat(root, ["left"]);
     expect(res[0].tiltDeg).toBeGreaterThan(60);
     expect(res[0].flat).toBe(false);
+  });
+});
+
+describe("BODY_SEGMENT_MASS (#117 ケース6)", () => {
+  it("sums to approximately 1.0（Winter モデルの端数誤差を許容）", () => {
+    const sum = Object.values(BODY_SEGMENT_MASS).reduce((s, v) => s + v, 0);
+    expect(sum).toBeGreaterThanOrEqual(0.98);
+    expect(sum).toBeLessThanOrEqual(1.02);
+  });
+});
+
+/**
+ * 支持点の候補ボーンのみを持つ最小リグ（#117 ケース3・4）。
+ * 各足を LeftToeBase/RightToeBase の 1 ボーンだけで表現するため
+ * （LeftFoot 等の別名ボーンを持たない）、"toe:L"/"toe:R" はそれぞれ
+ * 1 点にしか解決されず、支持多角形は退化した 2 頂点（両つま先）になる。
+ */
+const buildMinimalContactRig = () => {
+  const root = new THREE.Group();
+  const leftToe = new THREE.Bone();
+  leftToe.name = "LeftToeBase";
+  leftToe.position.set(0.1, 0, 0.1);
+  const rightToe = new THREE.Bone();
+  rightToe.name = "RightToeBase";
+  rightToe.position.set(-0.1, 0, 0.1);
+  root.add(leftToe, rightToe);
+  root.updateMatrixWorld(true);
+  return { root, leftToe, rightToe };
+};
+
+describe("computeSupportPolygon (#117)", () => {
+  it("excludes an unexpected incidental contact (arm touching the floor) from usedBones/polygon (ケース3)", () => {
+    const { root } = buildMinimalContactRig();
+    const result = computeSupportPolygon(
+      root,
+      ["toe:L", "toe:R"],
+      ["toe:L", "toe:R", "hand:L"]
+    );
+    expect(result.usedBones).not.toContain("hand:L");
+    expect(result.polygon).toHaveLength(2);
+  });
+
+  it("excludes an expected contact that is not actually grounded from usedBones (ケース4)", () => {
+    const { root } = buildMinimalContactRig();
+    const result = computeSupportPolygon(
+      root,
+      ["toe:L", "toe:R", "hand:L"],
+      ["toe:L", "toe:R"]
+    );
+    expect(result.usedBones).not.toContain("hand:L");
+    expect(result.expectedBones).toContain("hand:L");
+  });
+});
+
+/**
+ * 対称立位の全身リグ（#117 ケース1・2・5）。y-up、floorY=0。
+ * 足は「ボーン位置（Foot=足首相当）」と「ToeBase（爪先、前方）」の 2 点で
+ * 表現し、支持多角形に前後の実面積を持たせる（Foot はやや後方 z=-0.05、
+ * ToeBase は前方 z=0.10）。接地判定（computeContactClearances）用に、
+ * 各足ボーンへ完全ウェイトした頂点を持つ 1 枚の SkinnedMesh を bind する
+ * （bind 時点ではボーン変形デルタが恒等なので、頂点の world 座標は
+ * authored したローカル座標そのものになる — skinnedMannequin.test.ts 等の
+ * 既存パターンと同じ仕組み）。
+ */
+const buildStandingRig = () => {
+  const root = new THREE.Group();
+  const makeBone = (name: string): THREE.Bone => {
+    const b = new THREE.Bone();
+    b.name = name;
+    return b;
+  };
+
+  const hips = makeBone("Hips");
+  hips.position.set(0, 1.0, 0);
+  root.add(hips);
+
+  const spine = makeBone("Spine");
+  spine.position.set(0, 0.25, 0);
+  hips.add(spine);
+  const neck = makeBone("Neck");
+  neck.position.set(0, 0.3, 0);
+  spine.add(neck);
+  const head = makeBone("Head");
+  head.position.set(0, 0.13, 0);
+  neck.add(head);
+
+  const leftArm = makeBone("LeftArm");
+  leftArm.position.set(0.2, 0.2, 0);
+  hips.add(leftArm);
+  const leftForeArm = makeBone("LeftForeArm");
+  leftForeArm.position.set(0, -0.3, 0);
+  leftArm.add(leftForeArm);
+  const leftHand = makeBone("LeftHand");
+  leftHand.position.set(0, -0.25, 0);
+  leftForeArm.add(leftHand);
+
+  const rightArm = makeBone("RightArm");
+  rightArm.position.set(-0.2, 0.2, 0);
+  hips.add(rightArm);
+  const rightForeArm = makeBone("RightForeArm");
+  rightForeArm.position.set(0, -0.3, 0);
+  rightArm.add(rightForeArm);
+  const rightHand = makeBone("RightHand");
+  rightHand.position.set(0, -0.25, 0);
+  rightForeArm.add(rightHand);
+
+  const leftUpLeg = makeBone("LeftUpLeg");
+  leftUpLeg.position.set(0.1, -0.05, 0);
+  hips.add(leftUpLeg);
+  const leftLeg = makeBone("LeftLeg");
+  leftLeg.position.set(0, -0.45, 0);
+  leftUpLeg.add(leftLeg);
+  const leftFoot = makeBone("LeftFoot");
+  leftFoot.position.set(0, -0.45, -0.03);
+  leftLeg.add(leftFoot);
+  const leftToeBase = makeBone("LeftToeBase");
+  leftToeBase.position.set(0, -0.05, 0.08);
+  leftFoot.add(leftToeBase);
+
+  const rightUpLeg = makeBone("RightUpLeg");
+  rightUpLeg.position.set(-0.1, -0.05, 0);
+  hips.add(rightUpLeg);
+  const rightLeg = makeBone("RightLeg");
+  rightLeg.position.set(0, -0.45, 0);
+  rightUpLeg.add(rightLeg);
+  const rightFoot = makeBone("RightFoot");
+  rightFoot.position.set(0, -0.45, -0.03);
+  rightLeg.add(rightFoot);
+  const rightToeBase = makeBone("RightToeBase");
+  rightToeBase.position.set(0, -0.05, 0.08);
+  rightFoot.add(rightToeBase);
+
+  root.updateMatrixWorld(true);
+
+  const allBones = [
+    hips,
+    spine,
+    neck,
+    head,
+    leftArm,
+    leftForeArm,
+    leftHand,
+    rightArm,
+    rightForeArm,
+    rightHand,
+    leftUpLeg,
+    leftLeg,
+    leftFoot,
+    leftToeBase,
+    rightUpLeg,
+    rightLeg,
+    rightFoot,
+    rightToeBase,
+  ];
+
+  // 接地判定用の足スキンメッシュ。各頂点は単一ボーンへ完全ウェイトし、
+  // floorY=0 に接する高さ（y=0）で配置する（x/z はボーン位置に揃える）。
+  const footVerts: [THREE.Bone, number, number][] = [
+    [leftFoot, 0.1, -0.03],
+    [leftToeBase, 0.1, 0.05],
+    [rightFoot, -0.1, -0.03],
+    [rightToeBase, -0.1, 0.05],
+  ];
+  const positions: number[] = [];
+  const skinIndices: number[] = [];
+  const skinWeights: number[] = [];
+  for (const [bone, x, z] of footVerts) {
+    positions.push(x, 0, z);
+    const boneIdx = allBones.indexOf(bone);
+    skinIndices.push(boneIdx, 0, 0, 0);
+    skinWeights.push(1, 0, 0, 0);
+  }
+  const geom = new THREE.BufferGeometry();
+  geom.setAttribute(
+    "position",
+    new THREE.BufferAttribute(new Float32Array(positions), 3)
+  );
+  geom.setAttribute(
+    "skinIndex",
+    new THREE.BufferAttribute(new Uint16Array(skinIndices), 4)
+  );
+  geom.setAttribute(
+    "skinWeight",
+    new THREE.BufferAttribute(new Float32Array(skinWeights), 4)
+  );
+  const mesh = new THREE.SkinnedMesh(geom, new THREE.MeshBasicMaterial());
+  mesh.bind(new THREE.Skeleton(allBones));
+  root.add(mesh);
+  root.updateMatrixWorld(true);
+
+  return { root, hips, spine };
+};
+
+describe("computeCOM (#117)", () => {
+  it("places the COM near the hips for a symmetric standing pose", () => {
+    const { root } = buildStandingRig();
+    const com = computeCOM(root);
+    // 左右対称なので X は 0、Y は Hips 高さ付近（腕・脚の質量が上下に相殺し合う）
+    expect(com.xz.x).toBeCloseTo(0, 5);
+    expect(com.world.y).toBeGreaterThan(0.8);
+    expect(com.world.y).toBeLessThan(1.2);
+  });
+});
+
+describe("checkStability (#117)", () => {
+  it("passes for a symmetric standing pose with both feet grounded (ケース1)", () => {
+    const { root } = buildStandingRig();
+    const result = checkStability(root, ["toe:L", "toe:R"], 0);
+    expect(result.pass).toBe(true);
+    expect(result.distanceToBoundaryM).toBeGreaterThan(STABILITY.marginM);
+    expect(result.supportBones).toHaveLength(2);
+  });
+
+  it("fails single-foot support: degenerate support polygon (ケース2)", () => {
+    const { root } = buildStandingRig();
+    const result = checkStability(root, ["toe:L"], 0);
+    expect(result.pass).toBe(false);
+    expect(result.supportPolygon.length).toBeLessThan(3);
+  });
+
+  it("fails when the COM is pitched outside the support polygon by a deep forward lean (ケース5)", () => {
+    const { root, spine } = buildStandingRig();
+    spine.quaternion.setFromAxisAngle(
+      new THREE.Vector3(1, 0, 0),
+      THREE.MathUtils.degToRad(75)
+    );
+    root.updateMatrixWorld(true);
+    const result = checkStability(root, ["toe:L", "toe:R"], 0);
+    expect(result.pass).toBe(false);
+    expect(result.distanceToBoundaryM).toBeLessThan(-0.02);
+  });
+});
+
+/**
+ * codex レビュー指摘 P2 の回帰テスト（#117）。
+ *
+ * 単位正方形（頂点 (0,0)-(1,0)-(1,1)-(0,1)）。頂点順は
+ * signedDistanceToPolygon が前提とする「時計回り（内側 = 各辺の右側）」
+ * 規約に合わせて [(0,1),(1,1),(1,0),(0,0)] とする（convexHull2D がこの
+ * 座標集合に対して実際に生成する巻き順と一致させたもの）。
+ */
+describe("signedDistanceToPolygon (#117 codex P2 回帰)", () => {
+  const unitSquareCW = [
+    { x: 0, z: 1 },
+    { x: 1, z: 1 },
+    { x: 1, z: 0 },
+    { x: 0, z: 0 },
+  ];
+
+  it("returns the distance to the nearest vertex for a point outside a corner (ケース7)", () => {
+    // バグ修正前は「右辺 x=1 を延長した直線までの距離 = 1」を誤って返していた。
+    // 正しくは頂点 (1,1) までの最短距離 √2。
+    const d = signedDistanceToPolygon({ x: 2, z: 2 }, unitSquareCW);
+    expect(d).toBeCloseTo(-Math.sqrt(2), 6);
+  });
+
+  it("returns the correct positive margin for a point at the polygon center", () => {
+    const d = signedDistanceToPolygon({ x: 0.5, z: 0.5 }, unitSquareCW);
+    expect(d).toBeCloseTo(0.5, 6);
   });
 });

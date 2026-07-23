@@ -473,6 +473,370 @@ export const computeContactClearances = (
 };
 
 /**
+ * 重力安定性チェック（#117）。
+ *
+ * 「重力を受けてもポーズが崩れないか」を、COM（重心）の水平投影が支持多角形
+ * （接地部位の水平座標の凸包）に収まるかで判定する準静的モデル。物理シミュ
+ * （rapier/cannon 等）は決定論性を損なうため使わない（親 #116 Decision Log #3）。
+ *
+ * 座標系: three.js の y-up。重力方向は -Y、水平面は XZ 平面。
+ * 支持多角形は既存 contacts フィールド（CONTACT_PART_BONES のキー）を
+ * 「期待接地集合」として再利用し、期待 ∩ 実接地の凸包とする（Decision Log #1）。
+ * 実接地判定は既存 computeContactClearances / CONTACT_PART_BONES を流用し、
+ * 独自の接地判定は作らない。
+ */
+
+/**
+ * Winter (1990) の人体分節質量比（総体重比）。左右対称の四肢は片側の値
+ * （実体重比は左右合算で 2 倍になる）。汎用の粗い網としての経験値であり、
+ * 個体差は考慮しない（#84 の設計方針を踏襲）。合計はおよそ 1.0（欠損分節
+ * を丸めた誤差を含み 0.98〜1.02 程度に収まる）。
+ */
+export const BODY_SEGMENT_MASS = {
+  trunk: 0.497,
+  headNeck: 0.0826,
+  "upperArm:L": 0.028,
+  "upperArm:R": 0.028,
+  "foreArm:L": 0.016,
+  "foreArm:R": 0.016,
+  "hand:L": 0.006,
+  "hand:R": 0.006,
+  "thigh:L": 0.1,
+  "thigh:R": 0.1,
+  "calf:L": 0.045,
+  "calf:R": 0.045,
+  "foot:L": 0.0145,
+  "foot:R": 0.0145,
+} as const;
+
+/** 安定性判定の閾値集約（#117）。marginM は経験値で開始し、粗い網として運用する */
+export const STABILITY = {
+  /** 支持多角形境界からの内側マージンがこれを超えれば安定と判定する（m） */
+  marginM: 0.02,
+} as const;
+
+type MassSegmentSpec = {
+  key: keyof typeof BODY_SEGMENT_MASS;
+  /** 質点を置く区間の始点ボーン（mixamorig 標準名）。toBone 省略時は単独の点として使う */
+  fromBone: string;
+  toBone?: string;
+};
+
+/**
+ * 質点を置く区間の定義。buildBodyCapsules の CAPSULE_SPECS と同じ
+ * from→to ボーン対で、区間の中点に質量を集約する。
+ */
+const MASS_SEGMENT_SPECS: MassSegmentSpec[] = [
+  { key: "trunk", fromBone: "mixamorig:Spine", toBone: "mixamorig:Neck" },
+  { key: "headNeck", fromBone: "mixamorig:Neck", toBone: "mixamorig:Head" },
+  { key: "upperArm:L", fromBone: "mixamorig:LeftArm", toBone: "mixamorig:LeftForeArm" },
+  { key: "upperArm:R", fromBone: "mixamorig:RightArm", toBone: "mixamorig:RightForeArm" },
+  { key: "foreArm:L", fromBone: "mixamorig:LeftForeArm", toBone: "mixamorig:LeftHand" },
+  { key: "foreArm:R", fromBone: "mixamorig:RightForeArm", toBone: "mixamorig:RightHand" },
+  { key: "hand:L", fromBone: "mixamorig:LeftHand" },
+  { key: "hand:R", fromBone: "mixamorig:RightHand" },
+  { key: "thigh:L", fromBone: "mixamorig:LeftUpLeg", toBone: "mixamorig:LeftLeg" },
+  { key: "thigh:R", fromBone: "mixamorig:RightUpLeg", toBone: "mixamorig:RightLeg" },
+  { key: "calf:L", fromBone: "mixamorig:LeftLeg", toBone: "mixamorig:LeftFoot" },
+  { key: "calf:R", fromBone: "mixamorig:RightLeg", toBone: "mixamorig:RightFoot" },
+  { key: "foot:L", fromBone: "mixamorig:LeftFoot", toBone: "mixamorig:LeftToeBase" },
+  { key: "foot:R", fromBone: "mixamorig:RightFoot", toBone: "mixamorig:RightToeBase" },
+];
+
+/** root 配下のボーン名 → THREE.Bone の対応表を作る（複数関数で共用する内部ヘルパ） */
+const collectBoneMap = (root: THREE.Object3D): Map<string, THREE.Bone> => {
+  const boneMap = new Map<string, THREE.Bone>();
+  root.traverse((child) => {
+    if ((child as THREE.Bone).isBone) boneMap.set(child.name, child as THREE.Bone);
+  });
+  return boneMap;
+};
+
+export type COMResult = {
+  /** COM の world 座標（3D） */
+  world: THREE.Vector3;
+  /** COM の水平投影（XZ 平面） */
+  xz: { x: number; z: number };
+};
+
+/**
+ * 各体節（骨のミッドポイント）に Winter 質量比の質点を置き、加重平均で
+ * 全身の COM（world 座標）を求める。解決できない体節はスキップし、実際に
+ * 使えた質量の合計で正規化する（一部ボーンが無いテスト用簡易リグでも破綻しない）。
+ */
+export const computeCOM = (mannequin: THREE.Object3D): COMResult => {
+  mannequin.updateMatrixWorld(true);
+  const boneMap = collectBoneMap(mannequin);
+  const boneNames = Array.from(boneMap.keys());
+
+  const worldPos = (mixamoName: string): THREE.Vector3 | null => {
+    const name = resolveBoneName(mixamoName, boneNames);
+    const bone = name ? boneMap.get(name) : undefined;
+    return bone ? bone.getWorldPosition(new THREE.Vector3()) : null;
+  };
+
+  const weighted = new THREE.Vector3();
+  let totalWeight = 0;
+  for (const spec of MASS_SEGMENT_SPECS) {
+    const a = worldPos(spec.fromBone);
+    if (!a) continue;
+    const b = spec.toBone ? worldPos(spec.toBone) : null;
+    const point = b ? a.add(b).multiplyScalar(0.5) : a;
+    const weight = BODY_SEGMENT_MASS[spec.key];
+    weighted.add(point.multiplyScalar(weight));
+    totalWeight += weight;
+  }
+  if (totalWeight > 0) weighted.multiplyScalar(1 / totalWeight);
+  return { world: weighted, xz: { x: weighted.x, z: weighted.z } };
+};
+
+export type SupportPolygonResult = {
+  /** 凸包の頂点（時計回り）。3点未満は縮退（点 or 線分）で、そのまま返す */
+  polygon: Array<{ x: number; z: number }>;
+  /** 実際に支持として採用された接地キー（expectedContacts ∩ actualContacts） */
+  usedBones: string[];
+  /** 期待接地キーの全量（差分の観測用） */
+  expectedBones: string[];
+};
+
+/**
+ * 接地キー（CONTACT_PART_BONES のキー）に対応する別名リストのいずれかに
+ * サフィックス一致するボーンを全て集め、その world XZ 座標を返す。
+ * CONTACT_PART_BONES は「リグごとの命名ゆれの別名集合」なので、実在する
+ * ボーンが複数（例: 足首相当と爪先相当の両方）あれば全て支持点候補にする。
+ */
+const contactPointsXZ = (
+  boneMap: Map<string, THREE.Bone>,
+  contactKey: string
+): Array<{ x: number; z: number }> => {
+  const suffixes = CONTACT_PART_BONES[contactKey];
+  if (!suffixes) return [];
+  const pts: Array<{ x: number; z: number }> = [];
+  for (const [name, bone] of boneMap) {
+    if (!suffixes.some((s) => name.endsWith(s) || name === s)) continue;
+    const p = bone.getWorldPosition(new THREE.Vector3());
+    pts.push({ x: p.x, z: p.z });
+  }
+  return pts;
+};
+
+/** 2D 点の凸包（monotone chain）。3点未満は重複除去のみして返す（縮退ケース） */
+const convexHull2D = (
+  points: Array<{ x: number; z: number }>
+): Array<{ x: number; z: number }> => {
+  const uniq: Array<{ x: number; z: number }> = [];
+  for (const p of points) {
+    if (!uniq.some((q) => Math.abs(q.x - p.x) < 1e-9 && Math.abs(q.z - p.z) < 1e-9)) {
+      uniq.push(p);
+    }
+  }
+  if (uniq.length < 3) return uniq;
+
+  const sorted = [...uniq].sort((a, b) => (a.x !== b.x ? a.x - b.x : a.z - b.z));
+  const cross = (
+    o: { x: number; z: number },
+    a: { x: number; z: number },
+    b: { x: number; z: number }
+  ): number => (a.x - o.x) * (b.z - o.z) - (a.z - o.z) * (b.x - o.x);
+
+  const lower: Array<{ x: number; z: number }> = [];
+  for (const p of sorted) {
+    while (
+      lower.length >= 2 &&
+      cross(lower[lower.length - 2], lower[lower.length - 1], p) <= 0
+    ) {
+      lower.pop();
+    }
+    lower.push(p);
+  }
+  const upper: Array<{ x: number; z: number }> = [];
+  for (let i = sorted.length - 1; i >= 0; i--) {
+    const p = sorted[i];
+    while (
+      upper.length >= 2 &&
+      cross(upper[upper.length - 2], upper[upper.length - 1], p) <= 0
+    ) {
+      upper.pop();
+    }
+    upper.push(p);
+  }
+  lower.pop();
+  upper.pop();
+  // lower+upper は反時計回り。仕様（時計回り）に合わせて反転する
+  return lower.concat(upper).reverse();
+};
+
+/**
+ * 支持多角形を求める（Decision Log #1）。期待接地集合（expectedContacts）と
+ * 実接地集合（actualContacts）の積集合のみを支持点として採用し、期待して
+ * いない偶然の接触（例: 腕が床に触れているだけ）は寄与させない。
+ */
+export const computeSupportPolygon = (
+  mannequin: THREE.Object3D,
+  expectedContacts: string[],
+  actualContacts: string[]
+): SupportPolygonResult => {
+  mannequin.updateMatrixWorld(true);
+  const boneMap = collectBoneMap(mannequin);
+  const usedBones = expectedContacts.filter((c) => actualContacts.includes(c));
+
+  const points: Array<{ x: number; z: number }> = [];
+  for (const key of usedBones) {
+    points.push(...contactPointsXZ(boneMap, key));
+  }
+
+  return {
+    polygon: convexHull2D(points),
+    usedBones,
+    expectedBones: expectedContacts,
+  };
+};
+
+/** 点から線分への最短距離（2D、クランプ付き） */
+const pointToSegmentDistance2D = (
+  p: { x: number; z: number },
+  a: { x: number; z: number },
+  b: { x: number; z: number }
+): number => {
+  const abx = b.x - a.x;
+  const abz = b.z - a.z;
+  const lenSq = abx * abx + abz * abz;
+  if (lenSq < 1e-12) return Math.hypot(p.x - a.x, p.z - a.z);
+  const t = Math.max(0, Math.min(1, ((p.x - a.x) * abx + (p.z - a.z) * abz) / lenSq));
+  return Math.hypot(p.x - (a.x + t * abx), p.z - (a.z + t * abz));
+};
+
+/**
+ * 縮退した支持（点 or 線分、頂点 1〜2 個）に対する、点への最短距離。
+ * 凸包が面積を持たないため「内側」は原理的に存在せず、常に非負（≥0）の
+ * 距離を返す（呼び出し側で符号を反転し、常に非正のマージンとして扱う）。
+ */
+const distanceToDegenerateSupport = (
+  p: { x: number; z: number },
+  pts: Array<{ x: number; z: number }>
+): number => {
+  if (pts.length === 0) return Infinity;
+  if (pts.length === 1) return Math.hypot(p.x - pts[0].x, p.z - pts[0].z);
+  let min = Infinity;
+  for (let i = 0; i < pts.length - 1; i++) {
+    min = Math.min(min, pointToSegmentDistance2D(p, pts[i], pts[i + 1]));
+  }
+  return min;
+};
+
+/**
+ * 点から凸多角形境界までの符号付き距離（内側正・外側負、#117 座標系規約）。
+ * polygon は convexHull2D の出力（時計回り）で 3 点以上を前提とする。
+ *
+ * 内側の場合は各辺の間にいるため、各辺の直線までの符号付き距離の min が
+ * そのまま境界距離として正しい。外側の場合は「各辺を無限延長した直線までの
+ * 距離」では頂点の外側で実際の最近傍点からずれる（codex レビュー指摘 P2 —
+ * 例: 単位正方形に対し点 (2,2) は頂点 (1,1) までの √2 が正しいが、辺の延長
+ * 直線までの距離は 1 を返してしまう）。したがって外側は各辺（線分）までの
+ * 最短距離（pointToSegmentDistance2D）の全辺 min を取る。
+ */
+export const signedDistanceToPolygon = (
+  point: { x: number; z: number },
+  polygon: Array<{ x: number; z: number }>
+): number => {
+  let inside = true;
+  for (let i = 0; i < polygon.length; i++) {
+    const a = polygon[i];
+    const b = polygon[(i + 1) % polygon.length];
+    const edgeX = b.x - a.x;
+    const edgeZ = b.z - a.z;
+    const edgeLen = Math.hypot(edgeX, edgeZ);
+    if (edgeLen < 1e-9) continue;
+    // 時計回り多角形の内側は各辺の右側 = cross <= 0
+    const cross = edgeX * (point.z - a.z) - edgeZ * (point.x - a.x);
+    if (cross > 0) {
+      inside = false;
+      break;
+    }
+  }
+
+  if (inside) {
+    let minAbsDist = Infinity;
+    for (let i = 0; i < polygon.length; i++) {
+      const a = polygon[i];
+      const b = polygon[(i + 1) % polygon.length];
+      const edgeX = b.x - a.x;
+      const edgeZ = b.z - a.z;
+      const edgeLen = Math.hypot(edgeX, edgeZ);
+      if (edgeLen < 1e-9) continue;
+      const cross = edgeX * (point.z - a.z) - edgeZ * (point.x - a.x);
+      minAbsDist = Math.min(minAbsDist, Math.abs(cross / edgeLen));
+    }
+    return Number.isFinite(minAbsDist) ? minAbsDist : 0;
+  }
+
+  let minDist = Infinity;
+  for (let i = 0; i < polygon.length; i++) {
+    const a = polygon[i];
+    const b = polygon[(i + 1) % polygon.length];
+    minDist = Math.min(minDist, pointToSegmentDistance2D(point, a, b));
+  }
+  return Number.isFinite(minDist) ? -minDist : 0;
+};
+
+export type StabilityResult = {
+  pass: boolean;
+  /** COM の水平投影（XZ） */
+  comXZ: { x: number; z: number };
+  supportPolygon: Array<{ x: number; z: number }>;
+  /** 実際に支持として採用された接地キー */
+  supportBones: string[];
+  /** 支持多角形境界からの符号付き距離（内側正・外側負・境界=0、m） */
+  distanceToBoundaryM: number;
+  /** 判定に使った閾値（STABILITY.marginM） */
+  marginM: number;
+};
+
+/**
+ * 重力安定性の準静的判定（#117）。COM の水平投影が支持多角形の内側に
+ * margin 以上のマージンを持って収まっていれば安定（pass）と判定する。
+ *
+ * 実接地は既存 computeContactClearances（#90）を expectedContacts に対して
+ * 呼び出し、実際に接地している（grounded）ものだけを支持点候補にする
+ * （期待していたが浮いている接地部位は除外され、Decision Log #1 の
+ * 「expected ∩ actual」invariant と整合する）。
+ *
+ * 支持多角形が縮退（頂点 1〜2 個、点 or 線分）の場合は常に fail とし、
+ * distanceToBoundaryM は「最も近い支持点までの距離」の符号反転（常に ≤0）
+ * を返す。
+ */
+export const checkStability = (
+  mannequin: THREE.Object3D,
+  expectedContacts: string[],
+  floorY: number = 0
+): StabilityResult => {
+  mannequin.updateMatrixWorld(true);
+  const clearances = computeContactClearances(mannequin, expectedContacts, floorY);
+  const actualContacts = clearances.filter((c) => c.grounded).map((c) => c.part);
+
+  const { polygon, usedBones } = computeSupportPolygon(
+    mannequin,
+    expectedContacts,
+    actualContacts
+  );
+  const com = computeCOM(mannequin);
+
+  const distanceToBoundaryM =
+    polygon.length >= 3
+      ? signedDistanceToPolygon(com.xz, polygon)
+      : -distanceToDegenerateSupport(com.xz, polygon);
+
+  return {
+    pass: distanceToBoundaryM > STABILITY.marginM,
+    comXZ: com.xz,
+    supportPolygon: polygon,
+    supportBones: usedBones,
+    distanceToBoundaryM,
+    marginM: STABILITY.marginM,
+  };
+};
+
+/**
  * 手のひらの向きゲート（#90）。palm normal の world 方向が「床向き（-Y）」か
  * どうかを判定する。palm normal のボーン local 表現は bind ポーズで実測導出
  * する（リグ軸規約に非依存。四肢ツイスト #82 と同じ手法）。
