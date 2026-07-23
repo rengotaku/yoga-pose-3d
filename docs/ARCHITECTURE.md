@@ -79,11 +79,20 @@
   （swing/twist の分解は ADR 0008、`diagnosePose` 由来）。`make pose-score JSON=<path>`
   で機械可読出力（hold-out 集計・時系列トラッキング用）。
 - **`make golden-check`**（`e2e/golden-check.mjs`）: ゴールデン自体の品質を
-  測る指標。ROM 違反 / 自己めり込み / 接地 / 手のひらの向き（#90）に加え、
-  複数視点レンダーの再推定 vs 実写真セグメント方向の一致（指標A）。
+  測る指標。ROM 違反 / 自己めり込み / 接地 / 手のひらの向き（#90）/ **重力安定性**（#116, ADR 0011）
+  に加え、複数視点レンダーの再推定 vs 実写真セグメント方向の一致（指標A）。
   ADR 0008 で指標A に **coverage ゲート**（比較セグメント数≧4 かつ 系統≧2）を
   追加し、「比較 1/9」で合格していた kneel-sidebend のようなケースを FAIL にする。
   `make golden-check JSON=<path>` で機械可読出力。
+- **重力安定性（`stability` ゲート・ADR 0011）**: `poseValidity.ts` の
+  `checkStability` が (a) Winter 分節質量比で加重平均した COM と
+  (b) 期待接地集合（既存 `contacts` フィールド）∩ 実接地集合の凸包（支持多角形）を
+  求め、COM 水平投影が支持多角形の内側にあるか判定する準静的モデル。
+  `STABILITY.marginM` は境界からの許容マージン（負値可、境界外側までの
+  許容範囲を表す）で、縮退（頂点数 < 3）は marginM に関わらず常に fail。
+  /golden 編集画面（`GoldenViewerPage.tsx` + `stabilityViz.ts`）では
+  COM マーカーと支持多角形をライブ描画し、色帯（safe/warn/danger）で
+  安定度を可視化する。物理シミュ（rapier/cannon）は決定論性を優先して不採用。
 - **注意**: 実写真は `e2e/golden/photos/`（committed、ADR 0010）に配置し、
   `e2e/golden/sources.json`（committed）が pose → 写真パスの default 対応表になる。
   `sources.local.json`（gitignore 済み）は別マシン絶対パスの上書きに使うエスケープ
