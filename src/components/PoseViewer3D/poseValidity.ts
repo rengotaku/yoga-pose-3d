@@ -509,10 +509,24 @@ export const BODY_SEGMENT_MASS = {
   "foot:R": 0.0145,
 } as const;
 
-/** 安定性判定の閾値集約（#117）。marginM は経験値で開始し、粗い網として運用する */
+/**
+ * 安定性判定の閾値集約（#117）。marginM は経験値で開始し、粗い網として運用する。
+ *
+ * #118 で既存 3 ポーズに対して実測校正した: kneel-sidebend（後屈サイド
+ * リーチ）は COM 水平投影が膝・爪先の支持多角形境界からわずかに（実測
+ * 約 3.6cm）外側へ出るが、実写真でも成立する現実のポーズであり破綻して
+ * いない。COM モデル（Winter 分節質量比・骨ミッドポイント近似）と支持
+ * 多角形（接地部位の骨位置のみ・足裏の実接地面積を無視）はどちらも粗い
+ * 近似のため、数 cm の誤差は「明白な崩れを検出する粗い網」（#84 方針）の
+ * 許容範囲とみなし marginM を負値に校正した。
+ */
 export const STABILITY = {
-  /** 支持多角形境界からの内側マージンがこれを超えれば安定と判定する（m） */
-  marginM: 0.02,
+  /**
+   * 支持多角形境界からの符号付き距離（内側正・外側負）がこれを超えれば
+   * 安定と判定する（m）。負値は「境界の少し外側までは実用上安定とみなす」
+   * ことを意味する（#118 校正、上記コメント参照）。
+   */
+  marginM: -0.04,
 } as const;
 
 type MassSegmentSpec = {
@@ -793,8 +807,10 @@ export type StabilityResult = {
 };
 
 /**
- * 重力安定性の準静的判定（#117）。COM の水平投影が支持多角形の内側に
- * margin 以上のマージンを持って収まっていれば安定（pass）と判定する。
+ * 重力安定性の準静的判定（#117）。COM の水平投影と支持多角形境界との
+ * 符号付き距離が STABILITY.marginM を超えれば安定（pass）と判定する
+ * （marginM が負値の場合は「境界の少し外側までは許容する」ことになる。
+ * #118 校正、STABILITY のコメント参照）。
  *
  * 実接地は既存 computeContactClearances（#90）を expectedContacts に対して
  * 呼び出し、実際に接地している（grounded）ものだけを支持点候補にする
@@ -821,13 +837,19 @@ export const checkStability = (
   );
   const com = computeCOM(mannequin);
 
-  const distanceToBoundaryM =
-    polygon.length >= 3
-      ? signedDistanceToPolygon(com.xz, polygon)
-      : -distanceToDegenerateSupport(com.xz, polygon);
+  const isDegenerate = polygon.length < 3;
+  const distanceToBoundaryM = isDegenerate
+    ? -distanceToDegenerateSupport(com.xz, polygon)
+    : signedDistanceToPolygon(com.xz, polygon);
+
+  // 支持多角形が縮退（頂点1〜2個）していれば marginM の値に関わらず常に fail
+  // とする（#118 codex レビュー指摘 P2 — 負の marginM だと縮退時も COM が支持点
+  // の近くにあれば誤って pass してしまう回帰があった。#117 の invariant「縮退は
+  // 常に fail」を維持しつつ、診断用に distanceToBoundaryM 自体は返す）。
+  const pass = !isDegenerate && distanceToBoundaryM > STABILITY.marginM;
 
   return {
-    pass: distanceToBoundaryM > STABILITY.marginM,
+    pass,
     comXZ: com.xz,
     supportPolygon: polygon,
     supportBones: usedBones,

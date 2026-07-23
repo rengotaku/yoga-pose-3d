@@ -8,6 +8,7 @@ import {
   buildBodyCapsules,
   checkGoldenRom,
   checkPalmsFlat,
+  checkStability,
   compareLandmarkPoses,
   computeContactClearances,
   detectSelfPenetrations,
@@ -300,7 +301,8 @@ export const PoseViewer3D: React.FC = () => {
                 FLOOR_Y
               );
               const palms = checkPalmsFlat(mannequin, golden.palmsDown ?? []);
-              return { rom, penetrations, contacts, palms, unresolved };
+              const stability = checkStability(mannequin, golden.contacts ?? [], FLOOR_Y);
+              return { rom, penetrations, contacts, palms, stability, unresolved };
             },
             compareLandmarks: (a: RawLandmark[], b: RawLandmark[]) =>
               compareLandmarkPoses(a, b),

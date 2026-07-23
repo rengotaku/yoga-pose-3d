@@ -26,15 +26,26 @@ export const STABILITY_VIZ = {
 
 /**
  * 支持多角形境界からの符号付き距離（m）から色帯を決める。
- * `checkStability` の合否判定（`pass: distanceToBoundaryM > STABILITY.marginM`、strict >）
- * と整合させ、境界値ちょうど（distance === marginM）は safe ではなく warn とする。
- * 緑: distance > marginM（余裕あり） / 黄: 0 <= distance <= marginM（境界近い、fail 側含む） /
- * 赤: distance < 0（外側・不安定）。
+ *
+ * `STABILITY.marginM` の値（正・負・0 いずれも）によらず機能するよう、
+ * 境界からの距離そのものではなく「COM が内側にあるか」「gate
+ * （`checkStability` の `pass: distanceToBoundaryM > STABILITY.marginM`、
+ * strict >）が通るか」の 2 軸で色帯を決める:
+ *
+ * - **safe**（緑）: `distance > 0` — COM の水平投影が支持多角形の内側にあり、余裕がある
+ * - **warn**（黄）: `marginM < distance <= 0` — COM は境界上または外側だが、
+ *   `checkStability` の gate はまだ pass する（marginM が負値のときの「境界の
+ *   少し外側までは許容する」運用を反映）
+ * - **danger**（赤）: `distance <= marginM` — gate も fail する
+ *
+ * `marginM = -0.04`（#118 校正値）では warn zone は `(-0.04, 0]` に広がる。
+ * `marginM = 0` にすると warn zone は空になり safe/danger の 2 段階に縮退する
+ * （`stabilityViz.test.ts` で回帰確認済み）。
  */
 export const stabilityBandFor = (distanceToBoundaryM: number): StabilityBand => {
-  if (distanceToBoundaryM < 0) return "danger";
-  if (distanceToBoundaryM <= STABILITY.marginM) return "warn";
-  return "safe";
+  if (distanceToBoundaryM > 0) return "safe";
+  if (distanceToBoundaryM > STABILITY.marginM) return "warn";
+  return "danger";
 };
 
 /** 支持多角形の頂点上限。CONTACT_PART_BONES のキー数 × 別名重複を見込んだ余裕値 */
