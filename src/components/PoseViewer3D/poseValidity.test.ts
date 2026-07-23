@@ -556,6 +556,61 @@ describe("checkStability (#117)", () => {
     expect(result.pass).toBe(false);
     expect(result.distanceToBoundaryM).toBeLessThan(-0.02);
   });
+
+  it("fails regardless of a negative marginM when the support polygon is degenerate and the COM sits within 1cm of it (ケース8・codex P2 回帰)", () => {
+    // 支持多角形頂点1個（LeftToeBase）かつ COM が水平距離 1cm の直近にある
+    // 最小リグ。STABILITY.marginM = -0.04 のもとでは
+    // distanceToBoundaryM(-0.01) > marginM(-0.04) が成立してしまうため、
+    // 縮退判定を分離する前は誤って pass していた（#118 codex レビュー指摘 P2）。
+    const root = new THREE.Group();
+    const spine = new THREE.Bone();
+    spine.name = "Spine";
+    spine.position.set(0.1, 1.0, 0.1);
+    root.add(spine);
+    const neck = new THREE.Bone();
+    neck.name = "Neck";
+    // オフセット0で spine と同位置に置き、trunk 質点（唯一解決できる分節）の
+    // XZ を spine 位置に集中させる（他の分節ボーンは存在しないため
+    // COM ≈ trunk 中点 = spine のワールド位置になる）。
+    spine.add(neck);
+
+    const toe = new THREE.Bone();
+    toe.name = "LeftToeBase";
+    // COM の XZ (0.1, 0.1) から水平距離ちょうど 1cm の位置に単一支持点を置く
+    toe.position.set(0.11, 0, 0.1);
+    root.add(toe);
+    root.updateMatrixWorld(true);
+
+    // 接地判定用の頂点（floorY=0 に接する y=0。x/z は clearance 判定に無関係
+    // — bind 時点でポーズ変形デルタが恒等なので、頂点 world 座標は authored
+    // したローカル座標そのものになる）。
+    const geom = new THREE.BufferGeometry();
+    geom.setAttribute(
+      "position",
+      new THREE.BufferAttribute(new Float32Array([0, 0, 0]), 3)
+    );
+    geom.setAttribute(
+      "skinIndex",
+      new THREE.BufferAttribute(new Uint16Array([0, 0, 0, 0]), 4)
+    );
+    geom.setAttribute(
+      "skinWeight",
+      new THREE.BufferAttribute(new Float32Array([1, 0, 0, 0]), 4)
+    );
+    const mesh = new THREE.SkinnedMesh(geom, new THREE.MeshBasicMaterial());
+    mesh.bind(new THREE.Skeleton([toe]));
+    root.add(mesh);
+    root.updateMatrixWorld(true);
+
+    const result = checkStability(root, ["toe:L"], 0);
+
+    expect(result.supportPolygon.length).toBeLessThan(3);
+    expect(result.distanceToBoundaryM).toBeCloseTo(-0.01, 3);
+    // marginM (-0.04) より内側（distanceToBoundaryM > marginM）でも、縮退で
+    // あれば pass にならない（診断情報の distanceToBoundaryM 自体は残る）。
+    expect(result.distanceToBoundaryM).toBeGreaterThan(STABILITY.marginM);
+    expect(result.pass).toBe(false);
+  });
 });
 
 /**

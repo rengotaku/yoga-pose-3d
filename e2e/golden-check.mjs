@@ -26,7 +26,7 @@ import { tmpdir } from "node:os";
 import { ALLOWED_TIERS } from "./lib/aggregate.mjs";
 import { listPoseIds } from "./lib/goldenPoses.mjs";
 
-export const VALID_GATES = ["rom", "penetration", "contact", "palm", "photoAlignment"];
+export const VALID_GATES = ["rom", "penetration", "contact", "palm", "photoAlignment", "stability"];
 
 /**
  * waivers スキーマを検証。未知ゲート名・理由抜けで Error を throw する。
@@ -68,6 +68,7 @@ export function applyWaivers(check, waivers) {
     contact: 0,
     palm: 0,
     photoAlignment: 0,
+    stability: 0,
     total: 0,
   };
   const unusedWaivers = [];
@@ -84,6 +85,7 @@ export function applyWaivers(check, waivers) {
   const contactWaivers = getWaiversList("contact");
   const palmWaivers = getWaiversList("palm");
   const photoWaivers = getWaiversList("photoAlignment");
+  const stabilityWaivers = getWaiversList("stability");
 
   // 1. ROM
   const remainingRom = [];
@@ -187,6 +189,25 @@ export function applyWaivers(check, waivers) {
     }
   }
 
+  // 6. Stability（#118）。checkStability は per-part 配列でなく単一の判定
+  // 結果を返すため、他ゲートと違い「配列を残す/消す」ではなく「pass の
+  // 上書き」で waive を表現する（意味は他ゲートと同じ: waive されれば
+  // 違反として数えない）。
+  let stabilityWaived = false;
+  let stabilityReason = null;
+  const stabilityFail = Boolean(check.stability) && !check.stability.pass;
+  if (stabilityFail) {
+    const matched = stabilityWaivers.find((w) => !w.used);
+    if (matched) {
+      matched.used = true;
+      stabilityWaived = true;
+      stabilityReason = matched.reason;
+      waivedCounts.stability++;
+      waivedCounts.total++;
+      reportLines.push(`  WAIVED（${matched.reason}）`);
+    }
+  }
+
   // Record unused waivers
   for (const [gate, wList] of [
     ["rom", romWaivers],
@@ -194,6 +215,7 @@ export function applyWaivers(check, waivers) {
     ["contact", contactWaivers],
     ["palm", palmWaivers],
     ["photoAlignment", photoWaivers],
+    ["stability", stabilityWaivers],
   ]) {
     for (const w of wList) {
       if (!w.used) {
@@ -210,7 +232,8 @@ export function applyWaivers(check, waivers) {
     remainingPenetrations.length > 0 ||
     remainingContacts.length > 0 ||
     remainingPalms.length > 0 ||
-    (Boolean(photoFail) && !photoAlignmentWaived);
+    (Boolean(photoFail) && !photoAlignmentWaived) ||
+    (stabilityFail && !stabilityWaived);
 
   return {
     rom: remainingRom,
@@ -222,6 +245,14 @@ export function applyWaivers(check, waivers) {
       waived: photoAlignmentWaived,
       reason: photoAlignmentReason,
     },
+    stability: check.stability
+      ? {
+          ...check.stability,
+          pass: check.stability.pass || stabilityWaived,
+          waived: stabilityWaived,
+          reason: stabilityReason,
+        }
+      : null,
     waivedCounts,
     unusedWaivers,
     violation,
@@ -458,6 +489,7 @@ async function runCli() {
       palms: check.palms ?? [],
       photoAlignment: photoMatchResult,
       photoMatch: photoMatchResult,
+      stability: check.stability ?? null,
     };
     const waivedRes = applyWaivers(rawCheck, golden.waivers);
     if (waivedRes.violation) globalViolation = true;
@@ -592,7 +624,26 @@ async function runCli() {
       }
     }
 
-    // 6. 過剰宣言 warning
+    // 6. 安定性（#118）
+    if (!check.stability) {
+      console.log("  安定性:     指定なし（contacts 未設定）");
+    } else {
+      const distCm = (check.stability.distanceToBoundaryM * 100).toFixed(1);
+      const supportStr = check.stability.supportBones.join(",") || "なし";
+      if (check.stability.pass) {
+        console.log(`  安定性:     合格（境界まで ${distCm}cm、支持 ${supportStr}）`);
+      } else if (waivedRes.stability.waived) {
+        console.log(
+          `  安定性:     違反（境界まで ${distCm}cm、支持 ${supportStr}） -> WAIVED（${waivedRes.stability.reason}）`
+        );
+      } else {
+        console.log(
+          `  安定性:     違反（境界まで ${distCm}cm、支持 ${supportStr}）`
+        );
+      }
+    }
+
+    // 7. 過剰宣言 warning
     for (const unused of waivedRes.unusedWaivers) {
       console.warn(`  WAIVER 未使用: ${unused.label} warning`);
     }
@@ -615,6 +666,14 @@ async function runCli() {
         qualityFail: photoMatchResult.qualityFail,
         waived: waivedRes.photoAlignment.waived ? 1 : 0,
       },
+      stability: check.stability
+        ? {
+            pass: waivedRes.stability.pass,
+            distanceToBoundaryM: check.stability.distanceToBoundaryM,
+            comXZ: check.stability.comXZ,
+            supportBones: check.stability.supportBones,
+          }
+        : null,
     };
     jsonResults.push(result);
   }

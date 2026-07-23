@@ -193,6 +193,67 @@ describe("waiver schema and validation (Case 1 ~ Case 8)", () => {
     const reportText = (result.reportLines || []).join("\n");
     expect(reportText).toContain("WAIVED（配列形式での免除理由）");
   });
+
+  // 追加テスト（#118）: Case 12: stability 未指定時は waivedCounts.stability が 0 のまま
+  it("Case 12: stability 未指定時は waivedCounts.stability が 0 のまま", () => {
+    const check = createMockCheck();
+    const result = applyWaivers(check, undefined);
+    expect(result.waivedCounts.stability).toBe(0);
+    expect(result.stability).toBeNull();
+  });
+
+  // 追加テスト（#118）: Case 13: stability 違反を waive すると violation が消え waivedCounts.stability が 1 になる
+  it("Case 13: stability 違反を waive すると violation が消える", () => {
+    const check = createMockCheck({
+      stability: {
+        pass: false,
+        comXZ: { x: 0.5, z: 0 },
+        supportBones: ["hand:L", "hand:R"],
+        distanceToBoundaryM: -0.03,
+        marginM: 0.02,
+      },
+    });
+    const waivers = {
+      stability: { reason: "root 固定レンダリングの構造的限界" },
+    };
+    const result = applyWaivers(check, waivers);
+    expect(result.violation).toBe(false);
+    expect(result.waivedCounts.stability).toBe(1);
+    expect(result.waivedCounts.total).toBe(1);
+    expect(result.stability.pass).toBe(true);
+    expect(result.stability.waived).toBe(true);
+    expect(result.stability.reason).toBe("root 固定レンダリングの構造的限界");
+    const reportText = (result.reportLines || []).join("\n");
+    expect(reportText).toContain("WAIVED（root 固定レンダリングの構造的限界）");
+  });
+
+  // 追加テスト（#118）: Case 14: stability 違反を waive しないと violation のまま
+  it("Case 14: stability 違反を waive しないと FAIL のまま", () => {
+    const check = createMockCheck({
+      stability: {
+        pass: false,
+        comXZ: { x: 0.5, z: 0 },
+        supportBones: ["hand:L", "hand:R"],
+        distanceToBoundaryM: -0.03,
+        marginM: 0.02,
+      },
+    });
+    const result = applyWaivers(check, undefined);
+    expect(result.violation).toBe(true);
+    expect(result.waivedCounts.stability).toBe(0);
+    expect(result.stability.pass).toBe(false);
+  });
+
+  // 追加テスト（#118）: Case 15: 未知ゲート名の validation error メッセージに stability も含まれる
+  it("Case 15: 未知ゲート名の validation error メッセージに stability も含まれる", () => {
+    const waivers = { unknownGate: { reason: "test" } };
+    try {
+      validateWaivers(waivers);
+      expect.unreachable();
+    } catch (e) {
+      expect(e.message).toMatch(/stability/);
+    }
+  });
 });
 
 
