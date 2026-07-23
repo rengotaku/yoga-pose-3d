@@ -51,5 +51,19 @@
   },
   "contacts": [
     "hip"
-  ]
+  ],
+  "waivers": {
+    "contact": {
+      "part": "hip",
+      "reason": "root 位置固定のレンダリング仕様で、あぐらは骨盤が床に落ちる姿勢を再現できない"
+    },
+    "photoAlignment": {
+      "reason": "実写の交差脚は 2D 深度潰れで MediaPipe が正確に検出できず、指標A は補助扱い #92 本文"
+    },
+    "penetration": {
+      "pair": "thigh:L × calf:R",
+      "reason": "実あぐらは脛が中央で交差する。カプセル近似では相互侵入として検出されるが、実人体では柔軟に避けている"
+    }
+  }
 }
+

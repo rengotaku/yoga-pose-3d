@@ -10,17 +10,224 @@
  * （schemaVersion 2）。個別ポーズの合否判定なので pose-score のような
  * tier 別集計は行わない。
  *
+ * #114 で per-pose waiver 機構を追加:
+ * - validateWaivers: 未知ゲート名・理由抜けで throw
+ * - applyWaivers: check 結果から免除項目を除外し、waivedCounts / unusedWaivers を算出
+ *
  * 前提: dev サーバ起動済み（ポートは PORT 環境変数、既定 5173）。
  * 実行: make golden-check   （POSE=<id> で単一ポーズのみ）
  * exit code: B の違反が 1 件でもあれば 1
  */
 import { chromium } from "playwright";
-import { readdirSync, readFileSync, existsSync, mkdtempSync, writeFileSync } from "node:fs";
+import { readdirSync, readFileSync, existsSync, mkdtempSync, writeFileSync, realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join, isAbsolute } from "node:path";
 import { tmpdir } from "node:os";
 import { ALLOWED_TIERS } from "./lib/aggregate.mjs";
 import { listPoseIds } from "./lib/goldenPoses.mjs";
+
+export const VALID_GATES = ["rom", "penetration", "contact", "palm", "photoAlignment"];
+
+/**
+ * waivers スキーマを検証。未知ゲート名・理由抜けで Error を throw する。
+ */
+export function validateWaivers(waivers) {
+  if (waivers === undefined || waivers === null) {
+    return;
+  }
+  if (typeof waivers !== "object" || Array.isArray(waivers)) {
+    throw new Error("waivers must be an object");
+  }
+  for (const [gate, value] of Object.entries(waivers)) {
+    if (!VALID_GATES.includes(gate)) {
+      throw new Error(
+        `unknown gate "${gate}". Valid gates are: ${VALID_GATES.join(", ")}`
+      );
+    }
+    const items = Array.isArray(value) ? value : [value];
+    for (const item of items) {
+      if (!item || typeof item !== "object") {
+        throw new Error(`invalid waiver item for ${gate}`);
+      }
+      if (!item.reason || typeof item.reason !== "string" || item.reason.trim() === "") {
+        throw new Error(`reason is required for ${gate} waiver`);
+      }
+    }
+  }
+}
+
+/**
+ * check 結果に waivers を適用するヘルパー。
+ */
+export function applyWaivers(check, waivers) {
+  validateWaivers(waivers);
+
+  const waivedCounts = {
+    rom: 0,
+    penetration: 0,
+    contact: 0,
+    palm: 0,
+    photoAlignment: 0,
+    total: 0,
+  };
+  const unusedWaivers = [];
+  const reportLines = [];
+
+  const getWaiversList = (gate) => {
+    if (!waivers || !waivers[gate]) return [];
+    const val = waivers[gate];
+    return (Array.isArray(val) ? val : [val]).map((item) => ({ ...item, used: false }));
+  };
+
+  const romWaivers = getWaiversList("rom");
+  const penWaivers = getWaiversList("penetration");
+  const contactWaivers = getWaiversList("contact");
+  const palmWaivers = getWaiversList("palm");
+  const photoWaivers = getWaiversList("photoAlignment");
+
+  // 1. ROM
+  const remainingRom = [];
+  for (const v of check.rom ?? []) {
+    const matched = romWaivers.find((w) => w.bone === v.bone || w.bone === `${v.bone}.${v.axis}`);
+    if (matched) {
+      matched.used = true;
+      waivedCounts.rom++;
+      waivedCounts.total++;
+      reportLines.push(
+        `  WAIVED ${waivedCounts.rom}: ${v.bone}.${v.axis} = ${v.valueDeg}° (${matched.reason})`
+      );
+    } else {
+      remainingRom.push(v);
+    }
+  }
+
+  // 2. Penetration
+  const remainingPenetrations = [];
+  for (const p of check.penetrations ?? []) {
+    const pairName = `${p.a} × ${p.b}`;
+    const pairNameAlt = `${p.b} × ${p.a}`;
+    const matched = penWaivers.find((w) => {
+      if (!w.pair) return false;
+      const normW = w.pair.replace(/\s+/g, " ").trim().toLowerCase();
+      const norm1 = pairName.replace(/\s+/g, " ").trim().toLowerCase();
+      const norm2 = pairNameAlt.replace(/\s+/g, " ").trim().toLowerCase();
+      return normW === norm1 || normW === norm2;
+    });
+    if (matched) {
+      matched.used = true;
+      waivedCounts.penetration++;
+      waivedCounts.total++;
+      reportLines.push(
+        `  WAIVED ${waivedCounts.penetration}: ${p.a} × ${p.b} = ${(p.depthM * 100).toFixed(1)}cm (${matched.reason})`
+      );
+    } else {
+      remainingPenetrations.push(p);
+    }
+  }
+
+  // 3. Contact
+  const remainingContacts = [];
+  const checkContacts = check.contacts ?? [];
+  for (const c of checkContacts) {
+    if (!c.grounded) {
+      const matched = contactWaivers.find((w) => w.part === c.part);
+      if (matched) {
+        matched.used = true;
+        waivedCounts.contact++;
+        waivedCounts.total++;
+        reportLines.push(
+          `  WAIVED ${waivedCounts.contact}: ${c.part} = 床から ${(c.clearanceM * 100).toFixed(1)}cm 浮き (${matched.reason})`
+        );
+      } else {
+        remainingContacts.push(c);
+      }
+    }
+  }
+
+  // 4. Palm
+  const remainingPalms = [];
+  for (const p of check.palms ?? []) {
+    if (!p.flat) {
+      const matched = palmWaivers.find((w) => w.side === p.side);
+      if (matched) {
+        matched.used = true;
+        waivedCounts.palm++;
+        waivedCounts.total++;
+        reportLines.push(
+          `  WAIVED ${waivedCounts.palm}: ${p.side} = 傾き ${p.tiltDeg.toFixed(0)}° (${matched.reason})`
+        );
+      } else {
+        remainingPalms.push(p);
+      }
+    }
+  }
+
+  // 5. Photo Alignment
+  let photoAlignmentWaived = false;
+  let photoAlignmentReason = null;
+  const photoStatus = check.photoAlignment?.status ?? check.photoMatch?.status;
+  const photoFail =
+    photoStatus === "fail" ||
+    photoStatus === "detect_fail_photo" ||
+    photoStatus === "detect_fail_render" ||
+    check.photoAlignment?.qualityFail ||
+    check.photoAlignment?.coverageFail ||
+    check.photoMatch?.qualityFail ||
+    check.photoMatch?.coverageFail;
+
+  if (photoFail) {
+    const matched = photoWaivers.find((w) => !w.used);
+    if (matched) {
+      matched.used = true;
+      photoAlignmentWaived = true;
+      photoAlignmentReason = matched.reason;
+      waivedCounts.photoAlignment++;
+      waivedCounts.total++;
+      reportLines.push(`  WAIVED（${matched.reason}）`);
+    }
+  }
+
+  // Record unused waivers
+  for (const [gate, wList] of [
+    ["rom", romWaivers],
+    ["penetration", penWaivers],
+    ["contact", contactWaivers],
+    ["palm", palmWaivers],
+    ["photoAlignment", photoWaivers],
+  ]) {
+    for (const w of wList) {
+      if (!w.used) {
+        const identifier = w.pair || w.part || w.bone || w.side || "";
+        const label = identifier ? `${gate} - ${identifier}` : gate;
+        unusedWaivers.push({ gate, waiver: w, label });
+        reportLines.push(`  WAIVER 未使用: ${label} warning`);
+      }
+    }
+  }
+
+  const violation =
+    remainingRom.length > 0 ||
+    remainingPenetrations.length > 0 ||
+    remainingContacts.length > 0 ||
+    remainingPalms.length > 0 ||
+    (Boolean(photoFail) && !photoAlignmentWaived);
+
+  return {
+    rom: remainingRom,
+    penetrations: remainingPenetrations,
+    contacts: remainingContacts,
+    palms: remainingPalms,
+    photoAlignment: {
+      ...(check.photoAlignment ?? check.photoMatch),
+      waived: photoAlignmentWaived,
+      reason: photoAlignmentReason,
+    },
+    waivedCounts,
+    unusedWaivers,
+    violation,
+    reportLines,
+  };
+}
 
 /** golden.tier を厳格に正規化。未指定は "dev"、既知でない値は throw。 */
 const normalizeTier = (raw, pose) => {
@@ -33,17 +240,6 @@ const normalizeTier = (raw, pose) => {
 
 const here = dirname(fileURLToPath(import.meta.url));
 const goldenDir = join(here, "golden");
-const port = process.env.PORT ?? "5173";
-const baseUrl = `http://localhost:${port}`;
-
-const cliArgs = process.argv.slice(2);
-const jsonFlagIdx = cliArgs.indexOf("--json");
-const jsonPath =
-  jsonFlagIdx >= 0 && cliArgs[jsonFlagIdx + 1] ? cliArgs[jsonFlagIdx + 1] : null;
-const positionals = cliArgs.filter((_, i) => i !== jsonFlagIdx && i !== jsonFlagIdx + 1);
-
-const poseArg = process.env.POSE ?? positionals[0];
-const poses = poseArg ? [poseArg] : listPoseIds(readdirSync(goldenDir));
 
 /**
  * sources.json（committed）と sources.local.json（gitignore・ローカル上書き）を
@@ -57,33 +253,23 @@ const loadSources = () => {
     const raw = JSON.parse(readFileSync(p, "utf8"));
     for (const [pose, photo] of Object.entries(raw)) {
       if (typeof photo !== "string") continue;
-      merged[pose] = isAbsolute(photo) ? photo : join(goldenDir, photo);
+      const absPath = isAbsolute(photo) ? photo : join(goldenDir, photo);
+      if (existsSync(absPath)) {
+        merged[pose] = absPath;
+      }
     }
   }
   return merged;
 };
 
-const sources = loadSources();
-
 /**
- * 指標A の合否しきい値（度・経験値）。推定器がマネキンレンダーを読む際の
- * ノイズ（体型差・簡素な質感）を考慮して写真同士より緩く設定。根拠と
- * 調整履歴は #88 参照。
+ * 指標A の合否しきい値（度・経験値）。
  */
 const A_MEAN_MAX_DEG = 20;
 const A_SEG_MAX_DEG = 35;
-
-/**
- * coverage の合格条件（#102）。従来「比較 1/9」でも合格扱いしていたパスを
- * 塞ぐ。閾値の根拠と実測ふるい分けは ADR 0008 参照。
- *   - 比較セグメント数が MIN_SEGMENTS 未満なら FAIL
- *   - 使用された系統数（体幹・左腕・右腕・左脚・右脚 の 5 系統）が
- *     MIN_SYSTEMS 未満なら FAIL
- */
 const A_MIN_SEGMENTS = 4;
 const A_MIN_SYSTEMS = 2;
 
-/** 9 セグメントを 5 系統に集約する */
 const SEGMENT_SYSTEM = {
   torso: "torso",
   "upperArm:L": "arm:L",
@@ -96,272 +282,371 @@ const SEGMENT_SYSTEM = {
   "calf:R": "leg:R",
 };
 
-const res = await fetch(baseUrl).catch(() => null);
-if (!res || !res.ok) {
-  console.error(`dev server not reachable at ${baseUrl} — run \`make run\` first`);
-  process.exit(1);
-}
+async function runCli() {
+  const port = process.env.PORT ?? "5173";
+  const baseUrl = `http://localhost:${port}`;
 
-const browser = await chromium.launch();
-const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
-const shotDir = mkdtempSync(join(tmpdir(), "golden-check-"));
+  const cliArgs = process.argv.slice(2);
+  const jsonFlagIdx = cliArgs.indexOf("--json");
+  const jsonPath =
+    jsonFlagIdx >= 0 && cliArgs[jsonFlagIdx + 1] ? cliArgs[jsonFlagIdx + 1] : null;
+  const positionals = cliArgs.filter((_, i) => i !== jsonFlagIdx && i !== jsonFlagIdx + 1);
 
-/** 画像をアップロードして駆動 landmark 配列を取得する。検出不能なら null */
-const landmarksForImage = async (imagePath) => {
-  await page.goto(baseUrl, { waitUntil: "domcontentloaded" });
-  const chooserPromise = page.waitForEvent("filechooser");
-  await page.getByText("クリックまたはドラッグ＆ドロップ").click();
-  const chooser = await chooserPromise;
-  await chooser.setFiles(imagePath);
-  try {
-    await page.getByText("使用筋（推定）").waitFor({ timeout: 30_000 });
-  } catch {
-    return null;
+  const poseArg = process.env.POSE ?? positionals[0];
+  const poses = poseArg ? [poseArg] : listPoseIds(readdirSync(goldenDir));
+
+  const sources = loadSources();
+
+  const res = await fetch(baseUrl).catch(() => null);
+  if (!res || !res.ok) {
+    console.error(`dev server not reachable at ${baseUrl} — run \`make run\` first`);
+    process.exit(1);
   }
-  await page.waitForTimeout(1_000);
-  return page.evaluate(() => window.__poseDebug.landmarks ?? null);
-};
 
-let violation = false;
-const jsonResults = [];
-for (const pose of poses) {
-  const goldenPath = join(goldenDir, `${pose}.json`);
-  if (!existsSync(goldenPath)) {
-    console.warn(`skip: ${pose}: golden json が無い`);
-    continue;
-  }
-  const golden = JSON.parse(readFileSync(goldenPath, "utf8"));
-  const tier = normalizeTier(golden.tier, pose);
-  console.log(`\n=== ${pose} (${tier}) ===`);
-  const result = {
-    pose,
-    tier,
-    rom: { violations: 0 },
-    penetration: { violations: 0 },
-    contact: { violations: 0, total: 0 },
-    palm: { violations: 0, total: 0 },
-    photoMatch: { status: "skip", meanDeg: null, over: 0, coverage: 0, systems: 0, coverageFail: false },
+  const browser = await chromium.launch();
+  const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
+  const shotDir = mkdtempSync(join(tmpdir(), "golden-check-"));
+
+  const landmarksForImage = async (imagePath) => {
+    await page.goto(baseUrl, { waitUntil: "domcontentloaded" });
+    const chooserPromise = page.waitForEvent("filechooser");
+    await page.getByText("クリックまたはドラッグ＆ドロップ").click();
+    const chooser = await chooserPromise;
+    await chooser.setFiles(imagePath);
+    try {
+      await page.getByText("使用筋（推定）").waitFor({ timeout: 30_000 });
+    } catch {
+      return null;
+    }
+    await page.waitForTimeout(1_000);
+    return page.evaluate(() => window.__poseDebug.landmarks ?? null);
   };
 
-  // 指標B: ゴールデン適用 → ROM + めり込み
-  await page.goto(baseUrl, { waitUntil: "domcontentloaded" });
-  await page.getByRole("button", { name: /3Dマネキン/ }).click();
-  await page.waitForFunction(() => Boolean(window.__poseDebug), { timeout: 30_000 });
-  const check = await page.evaluate((g) => window.__poseDebug.checkGolden(g), golden);
-
-  result.rom.violations = check.rom.length;
-  if (check.rom.length === 0) {
-    console.log("  ROM:        違反 0");
-  } else {
-    violation = true;
-    console.log(`  ROM:        違反 ${check.rom.length} 件`);
-    for (const v of check.rom) {
-      console.log(
-        `    ${v.bone}.${v.axis} = ${v.valueDeg}° (可動域 ${v.minDeg}..${v.maxDeg}°, 超過 ${v.excessDeg.toFixed(0)}°)`
-      );
+  let globalViolation = false;
+  const jsonResults = [];
+  for (const pose of poses) {
+    const goldenPath = join(goldenDir, `${pose}.json`);
+    if (!existsSync(goldenPath)) {
+      console.warn(`skip: ${pose}: golden json が無い`);
+      continue;
     }
-  }
-  result.penetration.violations = check.penetrations.length;
-  if (check.penetrations.length === 0) {
-    console.log("  めり込み:   違反 0");
-  } else {
-    violation = true;
-    console.log(`  めり込み:   違反 ${check.penetrations.length} 件`);
-    for (const p of check.penetrations) {
-      console.log(`    ${p.a} × ${p.b} 深さ ${(p.depthM * 100).toFixed(1)}cm`);
-    }
-  }
+    const golden = JSON.parse(readFileSync(goldenPath, "utf8"));
+    validateWaivers(golden.waivers);
 
-  // 接地ゲート（#90）: 指定部位の関節ボーンが床に着いているか
-  const floating = (check.contacts ?? []).filter((c) => !c.grounded);
-  result.contact.total = (check.contacts ?? []).length;
-  result.contact.violations = floating.length;
-  if ((check.contacts ?? []).length === 0) {
-    console.log("  接地:       指定なし");
-  } else if (floating.length === 0) {
-    console.log(`  接地:       違反 0（${check.contacts.length} 部位すべて接地）`);
-    if (process.env.VERBOSE)
-      for (const c of check.contacts)
-        console.log(`    ${c.part.padEnd(8)} ${(c.clearanceM * 100).toFixed(1)}cm`);
-  } else {
-    violation = true;
-    console.log(`  接地:       違反 ${floating.length} 件`);
-    for (const c of floating) {
-      console.log(`    ${c.part.padEnd(8)} 床から ${(c.clearanceM * 100).toFixed(1)}cm 浮き`);
-    }
-  }
+    const tier = normalizeTier(golden.tier, pose);
+    console.log(`\n=== ${pose} (${tier}) ===`);
 
-  // 手の向きゲート（#90）: 接地手の手のひらが水平か（指先立ち検出）
-  const tilted = (check.palms ?? []).filter((p) => !p.flat);
-  result.palm.total = (check.palms ?? []).length;
-  result.palm.violations = tilted.length;
-  if ((check.palms ?? []).length === 0) {
-    console.log("  手の向き:   指定なし");
-  } else if (tilted.length === 0) {
-    console.log(`  手の向き:   違反 0（${check.palms.length} 手すべて水平）`);
-  } else {
-    violation = true;
-    console.log(`  手の向き:   違反 ${tilted.length} 件`);
-    for (const p of tilted) {
-      console.log(`    ${p.side.padEnd(5)} 傾き ${p.tiltDeg.toFixed(0)}°（指先立ち疑い）`);
-    }
-  }
-
-  // 指標A: レンダー再推定 vs 実写真。
-  // 単一視点では自己遮蔽でセグメントが除外されやすいため（四つ這いの正面等）、
-  // 複数視点のレンダーを推定し、セグメント単位でマージする（比較数が多い
-  // 視点を優先し、そこで除外されたセグメントだけ他視点で補完）
-  const photoPath = sources[pose];
-  if (!photoPath || !existsSync(photoPath)) {
-    console.log("  写真整合:   skip（実写真パス未設定）");
-    jsonResults.push(result);
-    continue;
-  }
-  const photoLm = await landmarksForImage(photoPath);
-  if (!photoLm) {
-    console.log(
-      "  写真整合:   違反（実写真で推定器が人物検出せず、coverage 0/9 で FAIL）"
-    );
-    violation = true;
-    result.photoMatch = {
-      status: "detect_fail_photo",
-      meanDeg: null,
-      over: 0,
-      coverage: 0,
-      systems: 0,
-      coverageFail: true,
-      qualityFail: false,
-    };
-    jsonResults.push(result);
-    continue;
-  }
-
-  const VIEWS = [
-    { name: "front", az: 0, el: 10 },
-    { name: "side", az: 90, el: 10 },
-    { name: "side2", az: -90, el: 10 },
-  ];
-  const viewMatches = [];
-  for (const view of VIEWS) {
-    // 適用ポーズがフレーム内に来るよう checkGolden（カメラ再フィット込み）を
-    // 再実行してから撮る。landmarksForImage が別ページへ遷移するため毎回必要
+    // 指標B: ゴールデン適用 → ROM + めり込み + 接地 + 手の向き
     await page.goto(baseUrl, { waitUntil: "domcontentloaded" });
     await page.getByRole("button", { name: /3Dマネキン/ }).click();
     await page.waitForFunction(() => Boolean(window.__poseDebug), { timeout: 30_000 });
-    await page.evaluate((g) => window.__poseDebug.checkGolden(g), golden);
-    await page.evaluate(([az, el]) => window.__poseDebug.setView(az, el), [
-      view.az,
-      view.el,
-    ]);
-    // 画像未アップロード時のプレースホルダ（半透明ベール）がキャンバスを覆い、
-    // ベール越しのスクショでは推定器が人物検出できない（#88 の主因のひとつ）
-    await page.evaluate(() => {
-      for (const el of document.querySelectorAll("div, p, span")) {
-        if (
-          el.childElementCount === 0 &&
-          el.textContent?.includes("画像をアップロードすると")
-        ) {
-          el.style.display = "none";
-          if (el.parentElement) el.parentElement.style.display = "none";
-        }
-      }
-    });
-    await page.waitForTimeout(300);
-    const shotPath = join(shotDir, `${pose}-${view.name}.png`);
-    await page.locator("canvas[data-engine]").screenshot({ path: shotPath });
-    const renderLm = await landmarksForImage(shotPath);
-    if (!renderLm) continue;
-    const match = await page.evaluate(
-      ([a, b]) => window.__poseDebug.compareLandmarks(a, b),
-      [renderLm, photoLm]
-    );
-    viewMatches.push({ view: view.name, match });
-  }
+    const check = await page.evaluate((g) => window.__poseDebug.checkGolden(g), golden);
 
-  if (viewMatches.length === 0) {
-    console.log(
-      "  写真整合:   違反（全視点でマネキンレンダーの人物検出に失敗、coverage 0/9 で FAIL）"
-    );
-    violation = true;
-    result.photoMatch = {
-      status: "detect_fail_render",
+    // 指標A: レンダー再推定 vs 実写真
+    let photoMatchResult = {
+      status: "skip",
       meanDeg: null,
       over: 0,
       coverage: 0,
       systems: 0,
-      coverageFail: true,
+      coverageFail: false,
       qualityFail: false,
     };
-    jsonResults.push(result);
-    continue;
-  }
 
-  // マージ: 比較セグメント数の多い視点を優先し、足りない分を他視点で補完
-  viewMatches.sort((a, b) => b.match.segments.length - a.match.segments.length);
-  const merged = new Map();
-  const segSource = new Map();
-  for (const { view, match } of viewMatches) {
-    for (const s of match.segments) {
-      if (!merged.has(s.segment)) {
-        merged.set(s.segment, s);
-        segSource.set(s.segment, view);
+    const photoPath = sources[pose];
+    let photoLm = null;
+    if (photoPath && existsSync(photoPath)) {
+      photoLm = await landmarksForImage(photoPath);
+      if (!photoLm) {
+        photoMatchResult = {
+          status: "detect_fail_photo",
+          meanDeg: null,
+          over: 0,
+          coverage: 0,
+          systems: 0,
+          coverageFail: true,
+          qualityFail: false,
+        };
+      } else {
+        const VIEWS = [
+          { name: "front", az: 0, el: 10 },
+          { name: "side", az: 90, el: 10 },
+          { name: "side2", az: -90, el: 10 },
+        ];
+        const viewMatches = [];
+        for (const view of VIEWS) {
+          await page.goto(baseUrl, { waitUntil: "domcontentloaded" });
+          await page.getByRole("button", { name: /3Dマネキン/ }).click();
+          await page.waitForFunction(() => Boolean(window.__poseDebug), { timeout: 30_000 });
+          await page.evaluate((g) => window.__poseDebug.checkGolden(g), golden);
+          await page.evaluate(([az, el]) => window.__poseDebug.setView(az, el), [
+            view.az,
+            view.el,
+          ]);
+          await page.evaluate(() => {
+            for (const el of document.querySelectorAll("div, p, span")) {
+              if (
+                el.childElementCount === 0 &&
+                el.textContent?.includes("画像をアップロードすると")
+              ) {
+                el.style.display = "none";
+                if (el.parentElement) el.parentElement.style.display = "none";
+              }
+            }
+          });
+          await page.waitForTimeout(300);
+          const shotPath = join(shotDir, `${pose}-${view.name}.png`);
+          await page.locator("canvas[data-engine]").screenshot({ path: shotPath });
+          const renderLm = await landmarksForImage(shotPath);
+          if (!renderLm) continue;
+          const match = await page.evaluate(
+            ([a, b]) => window.__poseDebug.compareLandmarks(a, b),
+            [renderLm, photoLm]
+          );
+          viewMatches.push({ view: view.name, match });
+        }
+
+        if (viewMatches.length === 0) {
+          photoMatchResult = {
+            status: "detect_fail_render",
+            meanDeg: null,
+            over: 0,
+            coverage: 0,
+            systems: 0,
+            coverageFail: true,
+            qualityFail: false,
+          };
+        } else {
+          viewMatches.sort((a, b) => b.match.segments.length - a.match.segments.length);
+          const merged = new Map();
+          const segSource = new Map();
+          for (const { view, match } of viewMatches) {
+            for (const s of match.segments) {
+              if (!merged.has(s.segment)) {
+                merged.set(s.segment, s);
+                segSource.set(s.segment, view);
+              }
+            }
+          }
+          const segs = Array.from(merged.values());
+          const meanDeg = segs.reduce((s, m) => s + m.angleDeg, 0) / segs.length;
+          const over = segs.filter((s) => s.angleDeg > A_SEG_MAX_DEG);
+          const systems = new Set(segs.map((s) => SEGMENT_SYSTEM[s.segment] ?? "other"));
+          const coverageFail = segs.length < A_MIN_SEGMENTS || systems.size < A_MIN_SYSTEMS;
+          const qualityFail = meanDeg > A_MEAN_MAX_DEG || over.length > 0;
+          const aFail = coverageFail || qualityFail;
+          photoMatchResult = {
+            status: aFail ? "fail" : "pass",
+            meanDeg,
+            over: over.length,
+            coverage: segs.length,
+            systems: systems.size,
+            coverageFail,
+            qualityFail,
+            segs,
+            segSource,
+          };
+        }
       }
     }
+
+    // waiver を適用
+    const rawCheck = {
+      rom: check.rom ?? [],
+      penetrations: check.penetrations ?? [],
+      contacts: check.contacts ?? [],
+      palms: check.palms ?? [],
+      photoAlignment: photoMatchResult,
+      photoMatch: photoMatchResult,
+    };
+    const waivedRes = applyWaivers(rawCheck, golden.waivers);
+    if (waivedRes.violation) globalViolation = true;
+
+    // --- レポート出力 ---
+
+    // 1. ROM
+    if (check.rom.length === 0) {
+      console.log("  ROM:        違反 0");
+    } else if (waivedRes.rom.length === 0 && waivedRes.waivedCounts.rom > 0) {
+      console.log(`  ROM:        違反 0（WAIVED ${waivedRes.waivedCounts.rom} 件）`);
+    } else {
+      console.log(
+        `  ROM:        違反 ${waivedRes.rom.length} 件${
+          waivedRes.waivedCounts.rom > 0 ? `（WAIVED ${waivedRes.waivedCounts.rom} 件）` : ""
+        }`
+      );
+      for (const v of waivedRes.rom) {
+        console.log(
+          `    ${v.bone}.${v.axis} = ${v.valueDeg}° (可動域 ${v.minDeg}..${v.maxDeg}°, 超過 ${v.excessDeg.toFixed(0)}°)`
+        );
+      }
+    }
+
+    // 2. めり込み
+    if (check.penetrations.length === 0) {
+      console.log("  めり込み:   違反 0");
+    } else if (waivedRes.penetrations.length === 0 && waivedRes.waivedCounts.penetration > 0) {
+      const details = waivedRes.reportLines.filter((l) => l.includes("WAIVED") && l.includes("×")).join(", ").trim();
+      console.log(`  めり込み:   違反 0（${details || `WAIVED ${waivedRes.waivedCounts.penetration} 件`}）`);
+    } else {
+      console.log(
+        `  めり込み:   違反 ${waivedRes.penetrations.length} 件${
+          waivedRes.waivedCounts.penetration > 0 ? `（WAIVED ${waivedRes.waivedCounts.penetration} 件）` : ""
+        }`
+      );
+      for (const p of waivedRes.penetrations) {
+        console.log(`    ${p.a} × ${p.b} 深さ ${(p.depthM * 100).toFixed(1)}cm`);
+      }
+    }
+
+    // 3. 接地
+    const totalContacts = (check.contacts ?? []).length;
+    if (totalContacts === 0) {
+      console.log("  接地:       指定なし");
+    } else if (waivedRes.contacts.length === 0 && waivedRes.waivedCounts.contact === 0) {
+      console.log(`  接地:       違反 0（${totalContacts} 部位すべて接地）`);
+    } else if (waivedRes.contacts.length === 0 && waivedRes.waivedCounts.contact > 0) {
+      const details = waivedRes.reportLines.filter((l) => l.includes("WAIVED") && l.includes("床から")).join(", ").trim();
+      console.log(`  接地:       違反 0（${details || `WAIVED ${waivedRes.waivedCounts.contact} 件`}）`);
+    } else {
+      console.log(
+        `  接地:       違反 ${waivedRes.contacts.length} 件${
+          waivedRes.waivedCounts.contact > 0 ? `（WAIVED ${waivedRes.waivedCounts.contact} 件）` : ""
+        }`
+      );
+      for (const c of waivedRes.contacts) {
+        console.log(`    ${c.part.padEnd(8)} 床から ${(c.clearanceM * 100).toFixed(1)}cm 浮き`);
+      }
+    }
+
+    // 4. 手の向き
+    const totalPalms = (check.palms ?? []).length;
+    if (totalPalms === 0) {
+      console.log("  手の向き:   指定なし");
+    } else if (waivedRes.palms.length === 0 && waivedRes.waivedCounts.palm === 0) {
+      console.log(`  手の向き:   違反 0（${totalPalms} 手すべて水平）`);
+    } else if (waivedRes.palms.length === 0 && waivedRes.waivedCounts.palm > 0) {
+      console.log(`  手の向き:   違反 0（WAIVED ${waivedRes.waivedCounts.palm} 件）`);
+    } else {
+      console.log(
+        `  手の向き:   違反 ${waivedRes.palms.length} 件${
+          waivedRes.waivedCounts.palm > 0 ? `（WAIVED ${waivedRes.waivedCounts.palm} 件）` : ""
+        }`
+      );
+      for (const p of waivedRes.palms) {
+        console.log(`    ${p.side.padEnd(5)} 傾き ${p.tiltDeg.toFixed(0)}°（指先立ち疑い）`);
+      }
+    }
+
+    // 5. 写真整合
+    if (!photoPath || !existsSync(photoPath)) {
+      console.log("  写真整合:   skip（実写真パス未設定）");
+    } else if (photoMatchResult.status === "detect_fail_photo") {
+      if (waivedRes.photoAlignment.waived) {
+        const reasonStr = waivedRes.photoAlignment.reason ?? "構造的限界";
+        console.log(`  写真整合:   違反（実写真で推定器が人物検出せず） -> WAIVED（${reasonStr}）`);
+      } else {
+        console.log("  写真整合:   違反（実写真で推定器が人物検出せず、coverage 0/9 で FAIL）");
+      }
+    } else if (photoMatchResult.status === "detect_fail_render") {
+      if (waivedRes.photoAlignment.waived) {
+        const reasonStr = waivedRes.photoAlignment.reason ?? "構造的限界";
+        console.log(`  写真整合:   違反（全視点でマネキンレンダー人物検出失敗） -> WAIVED（${reasonStr}）`);
+      } else {
+        console.log("  写真整合:   違反（全視点でマネキンレンダーの人物検出に失敗、coverage 0/9 で FAIL）");
+      }
+    } else if (photoMatchResult.meanDeg !== null) {
+      const aFail = photoMatchResult.coverageFail || photoMatchResult.qualityFail;
+      const failReason = photoMatchResult.coverageFail
+        ? photoMatchResult.qualityFail
+          ? "coverage+品質"
+          : "coverage"
+        : photoMatchResult.qualityFail
+        ? "品質"
+        : "";
+
+      if (aFail && waivedRes.photoAlignment.waived) {
+        const reasonStr = waivedRes.photoAlignment.reason ?? failReason;
+        console.log(
+          `  写真整合:   平均角度差 ${photoMatchResult.meanDeg.toFixed(1)}° -> WAIVED（${reasonStr}）`
+        );
+      } else if (aFail) {
+        console.log(
+          `  写真整合:   平均角度差 ${photoMatchResult.meanDeg.toFixed(1)}°（合格: 平均≦${A_MEAN_MAX_DEG}° かつ 各≦${A_SEG_MAX_DEG}°） -> 違反(${failReason})`
+        );
+      } else {
+        console.log(
+          `  写真整合:   平均角度差 ${photoMatchResult.meanDeg.toFixed(1)}° -> 合格`
+        );
+      }
+
+      if (photoMatchResult.segs) {
+        for (const s of photoMatchResult.segs.sort((x, y) => y.angleDeg - x.angleDeg)) {
+          const dir = process.env.VERBOSE
+            ? `  render[${s.dirA.map((v) => v.toFixed(2)).join(",")}] photo[${s.dirB.map((v) => v.toFixed(2)).join(",")}]`
+            : "";
+          console.log(
+            `    ${s.segment.padEnd(11)} ${s.angleDeg.toFixed(1).padStart(6)}° (${photoMatchResult.segSource.get(s.segment)})${dir}`
+          );
+        }
+      }
+    }
+
+    // 6. 過剰宣言 warning
+    for (const unused of waivedRes.unusedWaivers) {
+      console.warn(`  WAIVER 未使用: ${unused.label} warning`);
+    }
+
+    // JSON 用結果オブジェクト構築
+    const result = {
+      pose,
+      tier,
+      rom: { violations: waivedRes.rom.length, waived: waivedRes.waivedCounts.rom },
+      penetration: { violations: waivedRes.penetrations.length, waived: waivedRes.waivedCounts.penetration },
+      contact: { violations: waivedRes.contacts.length, total: totalContacts, waived: waivedRes.waivedCounts.contact },
+      palm: { violations: waivedRes.palms.length, total: totalPalms, waived: waivedRes.waivedCounts.palm },
+      photoMatch: {
+        status: waivedRes.photoAlignment.waived ? "waived" : photoMatchResult.status,
+        meanDeg: photoMatchResult.meanDeg,
+        over: photoMatchResult.over,
+        coverage: photoMatchResult.coverage,
+        systems: photoMatchResult.systems,
+        coverageFail: photoMatchResult.coverageFail,
+        qualityFail: photoMatchResult.qualityFail,
+        waived: waivedRes.photoAlignment.waived ? 1 : 0,
+      },
+    };
+    jsonResults.push(result);
   }
-  const segs = Array.from(merged.values());
-  const meanDeg = segs.reduce((s, m) => s + m.angleDeg, 0) / segs.length;
-  const over = segs.filter((s) => s.angleDeg > A_SEG_MAX_DEG);
-  // coverage ゲート（#102）: 比較 X/9 と系統数の下限を強制。
-  // 従来「比較 1/9」でも「合格」表示されていたパスをここで塞ぐ
-  const systems = new Set(segs.map((s) => SEGMENT_SYSTEM[s.segment] ?? "other"));
-  const coverageFail =
-    segs.length < A_MIN_SEGMENTS || systems.size < A_MIN_SYSTEMS;
-  const qualityFail = meanDeg > A_MEAN_MAX_DEG || over.length > 0;
-  const aFail = coverageFail || qualityFail;
-  if (aFail) violation = true;
-  const reason = coverageFail
-    ? qualityFail
-      ? "coverage+品質"
-      : "coverage"
-    : qualityFail
-    ? "品質"
-    : "";
-  console.log(
-    `  写真整合:   平均角度差 ${meanDeg.toFixed(1)}°（合格: 平均≦${A_MEAN_MAX_DEG}° かつ 各≦${A_SEG_MAX_DEG}°、比較≧${A_MIN_SEGMENTS}/9 かつ 系統≧${A_MIN_SYSTEMS}/5） -> ${aFail ? `違反(${reason})` : "合格"}（比較 ${segs.length}/9、系統 ${systems.size}/5）`
-  );
-  for (const s of segs.sort((x, y) => y.angleDeg - x.angleDeg)) {
-    const dir = process.env.VERBOSE
-      ? `  render[${s.dirA.map((v) => v.toFixed(2)).join(",")}] photo[${s.dirB.map((v) => v.toFixed(2)).join(",")}]`
-      : "";
-    console.log(
-      `    ${s.segment.padEnd(11)} ${s.angleDeg.toFixed(1).padStart(6)}° (${segSource.get(s.segment)})${dir}`
+
+  if (jsonPath && jsonResults.length > 0) {
+    writeFileSync(
+      jsonPath,
+      JSON.stringify(
+        { schemaVersion: 2, results: jsonResults, exitCode: globalViolation ? 1 : 0 },
+        null,
+        2
+      )
     );
+    console.log(`\nJSON output: ${jsonPath}`);
   }
-  result.photoMatch = {
-    status: aFail ? "fail" : "pass",
-    meanDeg,
-    over: over.length,
-    coverage: segs.length,
-    systems: systems.size,
-    coverageFail,
-    qualityFail,
-  };
-  jsonResults.push(result);
+
+  await browser.close();
+  process.exit(globalViolation ? 1 : 0);
 }
 
-if (jsonPath && jsonResults.length > 0) {
-  writeFileSync(
-    jsonPath,
-    // schemaVersion 2（#104）: 各 result に tier を追加。集計は加えない
-    // （golden-check は個別合否判定のため pose-score のような tier 別集計は不要）
-    JSON.stringify(
-      { schemaVersion: 2, results: jsonResults, exitCode: violation ? 1 : 0 },
-      null,
-      2
-    )
-  );
-  console.log(`\nJSON output: ${jsonPath}`);
-}
+const isDirectRun = () => {
+  if (!process.argv[1]) return false;
+  try {
+    return realpathSync(fileURLToPath(import.meta.url)) === realpathSync(process.argv[1]);
+  } catch {
+    return false;
+  }
+};
 
-await browser.close();
-process.exit(violation ? 1 : 0);
+if (isDirectRun()) {
+  runCli().catch((err) => {
+    console.error(err);
+    process.exit(1);
+  });
+}
