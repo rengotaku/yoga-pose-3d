@@ -26,12 +26,14 @@ export const STABILITY_VIZ = {
 
 /**
  * 支持多角形境界からの符号付き距離（m）から色帯を決める。
- * 緑: distance >= marginM（余裕あり） / 黄: 0 <= distance < marginM（境界近い） /
+ * `checkStability` の合否判定（`pass: distanceToBoundaryM > STABILITY.marginM`、strict >）
+ * と整合させ、境界値ちょうど（distance === marginM）は safe ではなく warn とする。
+ * 緑: distance > marginM（余裕あり） / 黄: 0 <= distance <= marginM（境界近い、fail 側含む） /
  * 赤: distance < 0（外側・不安定）。
  */
 export const stabilityBandFor = (distanceToBoundaryM: number): StabilityBand => {
   if (distanceToBoundaryM < 0) return "danger";
-  if (distanceToBoundaryM < STABILITY.marginM) return "warn";
+  if (distanceToBoundaryM <= STABILITY.marginM) return "warn";
   return "safe";
 };
 
