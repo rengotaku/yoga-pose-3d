@@ -164,6 +164,8 @@ export const SELF_PENETRATION = {
       "chest|foreArm:R": { warn: 0.02, fail: 0.06 },
       "abdomen|thigh:L": { warn: 0.02, fail: 0.06 }, // happy baby / knee-to-chest（現状 EXCLUDED、将来外す時に備えて定義）
       "abdomen|thigh:R": { warn: 0.02, fail: 0.06 },
+      "calf:R|thigh:L": { warn: 0.02, fail: 0.05 }, // あぐら/ cross-seat（実測 3.1cm）
+      "calf:L|thigh:R": { warn: 0.02, fail: 0.05 }, // ミラー姿勢対応
       "thigh:L|thigh:R": { warn: 0.02, fail: 0.16 }, // cross-leg 系（実測 14.0cm）
       "hand:L|hand:R": { warn: 0.02, fail: 0.1 }, // 合掌（実測 8.0cm）
       "foreArm:L|hand:R": { warn: 0.02, fail: 0.07 }, // 腕組み（実測 5.0cm）
