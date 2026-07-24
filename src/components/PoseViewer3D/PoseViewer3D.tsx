@@ -14,6 +14,7 @@ import {
   detectSelfPenetrations,
   isPenetrationPass,
 } from "./poseValidity";
+import { applyNarrowPhaseRefinement } from "./penetrationNarrowPhase";
 import { fuseLandmarks } from "./fusion";
 import { clampHingeJoints } from "./jointLimits";
 import { MuscleLegend, type MuscleActivation } from "./MuscleLegend";
@@ -295,7 +296,15 @@ export const PoseViewer3D: React.FC = () => {
               groundMannequin(mannequin, FLOOR_Y);
               fitCameraToSkeleton();
               const rom = checkGoldenRom(golden);
-              const penetrations = detectSelfPenetrations(buildBodyCapsules(mannequin));
+              const broadPenetrations = detectSelfPenetrations(
+                buildBodyCapsules(mannequin)
+              );
+              const tNarrowStart = performance.now();
+              const penetrations = applyNarrowPhaseRefinement(
+                broadPenetrations,
+                mannequin
+              );
+              const narrowPhaseMs = performance.now() - tNarrowStart;
               // pass 判定は fail severity のみに反応する（warn は pass を落とさない、#128）
               const penetrationPass = isPenetrationPass(penetrations);
               const contacts = computeContactClearances(
@@ -312,6 +321,7 @@ export const PoseViewer3D: React.FC = () => {
                 contacts,
                 palms,
                 stability,
+                narrowPhaseMs,
                 unresolved,
               };
             },

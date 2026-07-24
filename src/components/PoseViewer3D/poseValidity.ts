@@ -405,6 +405,8 @@ export type Penetration = {
   depthM: number;
   /** warn: 情報表示のみ（pass 判定に影響しない） / fail: 違反（#128） */
   severity: "warn" | "fail";
+  /** narrow phase で再判定されたか（#129） */
+  narrowRefined?: boolean;
 };
 
 /** ペア名（ソート済みキー）から warn/fail の許容侵入深さを引く（#128） */
