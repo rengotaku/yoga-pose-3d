@@ -1,6 +1,7 @@
 import * as THREE from "three";
 import { isVisible, LM, VISIBILITY_GATE, type RawLandmark } from "./muscles";
 import { resolveBoneName } from "./retarget";
+import { tryApplyWithClamp } from "./clampInput";
 
 /**
  * per-limb 2-bone IK（#41）。
@@ -412,10 +413,26 @@ export const applyContactIK = (
 
       const reach = R.distanceTo(M) + M.distanceTo(E) - 1e-4;
       const target = computeContactTarget(R, E, reach, targetY);
+      const rootStart = rootBone.quaternion.clone();
+      const midStart = midBone.quaternion.clone();
       solveTwoBoneIK(rootBone, midBone, endBone, target, new THREE.Vector3(0, 1, 0));
+      const rootTarget = rootBone.quaternion.clone();
+      const midTarget = midBone.quaternion.clone();
+      tryApplyWithClamp(root, (factor) => {
+        rootBone.quaternion.copy(rootStart).slerp(rootTarget, factor);
+        midBone.quaternion.copy(midStart).slerp(midTarget, factor);
+      });
     }
     for (const { rootBone, midBone, endBone } of kneeling) {
+      const rootStart = rootBone.quaternion.clone();
+      const midStart = midBone.quaternion.clone();
       solveKneelingLeg(root, rootBone, midBone, endBone, floorY, measureClearance);
+      const rootTarget = rootBone.quaternion.clone();
+      const midTarget = midBone.quaternion.clone();
+      tryApplyWithClamp(root, (factor) => {
+        rootBone.quaternion.copy(rootStart).slerp(rootTarget, factor);
+        midBone.quaternion.copy(midStart).slerp(midTarget, factor);
+      });
     }
   }
 };
