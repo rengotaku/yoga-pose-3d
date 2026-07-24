@@ -12,6 +12,8 @@ import {
   detectSelfPenetrations,
   compareLandmarkPoses,
   SELF_PENETRATION,
+  CAPSULE_SPECS,
+  EXCLUDED_PAIRS,
   type SegmentCapsule,
   BODY_SEGMENT_MASS,
   STABILITY,
@@ -122,9 +124,9 @@ describe("detectSelfPenetrations", () => {
   });
 
   it("flags deep overlap between non-adjacent segments", () => {
-    // 前腕が胴体軸を貫通（距離 0、半径和 0.17）→ 深さ 0.17 > 許容 0.03
+    // 前腕が胸部軸を貫通（距離 0、半径和 0.17）→ 深さ 0.17 > 許容 0.03
     const caps = [
-      capsule("torso", 0, 0, 0, 0, 0.5, 0, 0.13),
+      capsule("chest", 0, 0, 0, 0, 0.5, 0, 0.13),
       capsule("foreArm:L", -0.2, 0.25, 0, 0.2, 0.25, 0, 0.04),
     ];
     const pens = detectSelfPenetrations(caps);
@@ -135,15 +137,15 @@ describe("detectSelfPenetrations", () => {
   it("allows light contact within the tolerance", () => {
     // 表面同士がちょうど接する（距離 = 半径和）→ 深さ 0
     const caps = [
-      capsule("torso", 0, 0, 0, 0, 0.5, 0, 0.13),
+      capsule("chest", 0, 0, 0, 0, 0.5, 0, 0.13),
       capsule("foreArm:L", -0.2, 0.25, 0.17, 0.2, 0.25, 0.17, 0.04),
     ];
     expect(detectSelfPenetrations(caps)).toHaveLength(0);
   });
 
-  it("skips excluded adjacent pairs (torso × upperArm)", () => {
+  it("skips excluded adjacent pairs (chest × upperArm)", () => {
     const caps = [
-      capsule("torso", 0, 0, 0, 0, 0.5, 0, 0.13),
+      capsule("chest", 0, 0, 0, 0, 0.5, 0, 0.13),
       capsule("upperArm:L", 0, 0.4, 0, 0.1, 0.2, 0, 0.045),
     ];
     expect(detectSelfPenetrations(caps)).toHaveLength(0);
@@ -639,5 +641,176 @@ describe("signedDistanceToPolygon (#117 codex P2 回帰)", () => {
   it("returns the correct positive margin for a point at the polygon center", () => {
     const d = signedDistanceToPolygon({ x: 0.5, z: 0.5 }, unitSquareCW);
     expect(d).toBeCloseTo(0.5, 6);
+  });
+});
+
+describe("ケース 1: SELF_PENETRATION.radiusM に新 capsule が定義される", () => {
+  it("defines chest, abdomen, pelvis, hand radii", () => {
+    const keys = ["chest", "abdomen", "pelvis", "hand"] as const;
+    for (const key of keys) {
+      expect(typeof (SELF_PENETRATION.radiusM as Record<string, number>)[key]).toBe(
+        "number"
+      );
+      expect((SELF_PENETRATION.radiusM as Record<string, number>)[key]).toBeGreaterThan(
+        0
+      );
+    }
+  });
+});
+
+describe("ケース 2: CAPSULE_SPECS に新 capsule spec が含まれる", () => {
+  it("contains chest, abdomen, pelvis, hand:L, hand:R and no torso", () => {
+    const names = CAPSULE_SPECS.map((s) => s.name);
+    expect(names).toContain("chest");
+    expect(names).toContain("abdomen");
+    expect(names).toContain("pelvis");
+    expect(names).toContain("hand:L");
+    expect(names).toContain("hand:R");
+    expect(names).not.toContain("torso");
+  });
+});
+
+describe("ケース 3: buildBodyCapsules が新 capsule 全てを生成する（simple skeleton fixture）", () => {
+  it("generates chest, abdomen, pelvis, hand:L, hand:R capsules", () => {
+    const root = new THREE.Group();
+    const makeBone = (name: string) => {
+      const b = new THREE.Bone();
+      b.name = name;
+      return b;
+    };
+    const hips = makeBone("mixamorig:Hips");
+    const spine = makeBone("mixamorig:Spine");
+    const spine1 = makeBone("mixamorig:Spine1");
+    const neck = makeBone("mixamorig:Neck");
+    const head = makeBone("mixamorig:Head");
+    const headTop = makeBone("mixamorig:HeadTop");
+
+    const leftArm = makeBone("mixamorig:LeftArm");
+    const leftForeArm = makeBone("mixamorig:LeftForeArm");
+    const leftHand = makeBone("mixamorig:LeftHand");
+    const leftHandTop = makeBone("mixamorig:LeftHandTop");
+    const leftHandMiddle = makeBone("mixamorig:LeftHandMiddle1");
+
+    const rightArm = makeBone("mixamorig:RightArm");
+    const rightForeArm = makeBone("mixamorig:RightForeArm");
+    const rightHand = makeBone("mixamorig:RightHand");
+    const rightHandTop = makeBone("mixamorig:RightHandTop");
+    const rightHandMiddle = makeBone("mixamorig:RightHandMiddle1");
+
+    const leftUpLeg = makeBone("mixamorig:LeftUpLeg");
+    const leftLeg = makeBone("mixamorig:LeftLeg");
+    const leftFoot = makeBone("mixamorig:LeftFoot");
+    const leftToeBase = makeBone("mixamorig:LeftToeBase");
+
+    const rightUpLeg = makeBone("mixamorig:RightUpLeg");
+    const rightLeg = makeBone("mixamorig:RightLeg");
+    const rightFoot = makeBone("mixamorig:RightFoot");
+    const rightToeBase = makeBone("mixamorig:RightToeBase");
+
+    hips.add(spine);
+    spine.add(spine1);
+    spine1.add(neck);
+    neck.add(head);
+    head.add(headTop);
+
+    spine1.add(leftArm);
+    leftArm.add(leftForeArm);
+    leftForeArm.add(leftHand);
+    leftHand.add(leftHandTop);
+    leftHand.add(leftHandMiddle);
+
+    spine1.add(rightArm);
+    rightArm.add(rightForeArm);
+    rightForeArm.add(rightHand);
+    rightHand.add(rightHandTop);
+    rightHand.add(rightHandMiddle);
+
+    hips.add(leftUpLeg);
+    leftUpLeg.add(leftLeg);
+    leftLeg.add(leftFoot);
+    leftFoot.add(leftToeBase);
+
+    hips.add(rightUpLeg);
+    rightUpLeg.add(rightLeg);
+    rightLeg.add(rightFoot);
+    rightFoot.add(rightToeBase);
+
+    root.add(hips);
+    root.updateMatrixWorld(true);
+
+    const caps = buildBodyCapsules(root);
+    const names = caps.map((c) => c.name);
+    expect(names).toContain("chest");
+    expect(names).toContain("abdomen");
+    expect(names).toContain("pelvis");
+    expect(names).toContain("hand:L");
+    expect(names).toContain("hand:R");
+  });
+});
+
+describe("追加テスト: hand capsule endpoint 検証 / 検知バグ: children[0] フォールバックが人差し指に外れる", () => {
+  it("uses LeftHandMiddle1 / RightHandMiddle1 for hand capsule b endpoint", () => {
+    const root = new THREE.Group();
+    const makeBone = (name: string, x: number, y: number, z: number) => {
+      const b = new THREE.Bone();
+      b.name = name;
+      b.position.set(x, y, z);
+      return b;
+    };
+    const handL = makeBone("mixamorig:LeftHand", 1, 0, 0);
+    // 人差し指 (index_01_l) を children[0] に配置
+    const indexL = makeBone("index_01_l", 0, 0.1, 0);
+    // 中指 (middle_01_l) を children[1] に配置
+    const middleL = makeBone("middle_01_l", 0.05, 0, 0);
+    handL.add(indexL);
+    handL.add(middleL);
+
+    root.add(handL);
+    root.updateMatrixWorld(true);
+
+    const caps = buildBodyCapsules(root);
+    const handCapsuleL = caps.find((c) => c.name === "hand:L");
+    expect(handCapsuleL).toBeDefined();
+
+    const expectedB = middleL.getWorldPosition(new THREE.Vector3());
+    expect(handCapsuleL!.b.distanceTo(expectedB)).toBeLessThan(1e-6);
+  });
+});
+
+describe("ケース 4: EXCLUDED_PAIRS から広域除外が消えている", () => {
+  it("returns false for removed wide exclusions", () => {
+    expect(EXCLUDED_PAIRS.has(["torso", "thigh:L"].sort().join("|"))).toBe(false);
+    expect(EXCLUDED_PAIRS.has(["thigh:L", "thigh:R"].sort().join("|"))).toBe(false);
+    expect(EXCLUDED_PAIRS.has(["head", "upperArm:L"].sort().join("|"))).toBe(false);
+    expect(EXCLUDED_PAIRS.has(["head", "upperArm:R"].sort().join("|"))).toBe(false);
+  });
+});
+
+describe("ケース 5: EXCLUDED_PAIRS に隣接ペアが残っている", () => {
+  it("returns true for required adjacent pairs", () => {
+    const pairs = [
+      ["chest", "abdomen"],
+      ["abdomen", "pelvis"],
+      ["chest", "pelvis"],
+      ["chest", "head"],
+      ["chest", "upperArm:L"],
+      ["chest", "upperArm:R"],
+      ["pelvis", "thigh:L"],
+      ["pelvis", "thigh:R"],
+      ["abdomen", "thigh:L"],
+      ["abdomen", "thigh:R"],
+      ["foreArm:L", "hand:L"],
+      ["foreArm:R", "hand:R"],
+      ["upperArm:L", "foreArm:L"],
+      ["upperArm:R", "foreArm:R"],
+      ["thigh:L", "calf:L"],
+      ["thigh:R", "calf:R"],
+      ["calf:L", "foot:L"],
+      ["calf:R", "foot:R"],
+    ];
+    for (const p of pairs) {
+      const key = p.sort().join("|");
+      expect(EXCLUDED_PAIRS.has(key)).toBe(true);
+    }
   });
 });

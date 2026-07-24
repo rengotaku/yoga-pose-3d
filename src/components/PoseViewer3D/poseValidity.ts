@@ -137,7 +137,9 @@ export const checkGoldenRom = (golden: GoldenPose): RomViolation[] => {
  */
 export const SELF_PENETRATION = {
   radiusM: {
-    torso: 0.13,
+    chest: 0.13,
+    abdomen: 0.1,
+    pelvis: 0.13,
     head: 0.09,
     upperArm: 0.045,
     foreArm: 0.04,
@@ -210,12 +212,24 @@ type CapsuleSpec = {
   radius: number;
 };
 
-const CAPSULE_SPECS: CapsuleSpec[] = [
+export const CAPSULE_SPECS: CapsuleSpec[] = [
   {
-    name: "torso",
-    fromBone: "mixamorig:Spine",
+    name: "chest",
+    fromBone: "mixamorig:Spine1",
     toBone: "mixamorig:Neck",
-    radius: SELF_PENETRATION.radiusM.torso,
+    radius: SELF_PENETRATION.radiusM.chest,
+  },
+  {
+    name: "abdomen",
+    fromBone: "mixamorig:Spine",
+    toBone: "mixamorig:Spine1",
+    radius: SELF_PENETRATION.radiusM.abdomen,
+  },
+  {
+    name: "pelvis",
+    fromBone: "mixamorig:Hips",
+    toBone: "mixamorig:Spine",
+    radius: SELF_PENETRATION.radiusM.pelvis,
   },
   {
     name: "head",
@@ -246,6 +260,18 @@ const CAPSULE_SPECS: CapsuleSpec[] = [
     fromBone: "mixamorig:RightForeArm",
     toBone: "mixamorig:RightHand",
     radius: SELF_PENETRATION.radiusM.foreArm,
+  },
+  {
+    name: "hand:L",
+    fromBone: "mixamorig:LeftHand",
+    toBone: "mixamorig:LeftHandMiddle1",
+    radius: SELF_PENETRATION.radiusM.hand,
+  },
+  {
+    name: "hand:R",
+    fromBone: "mixamorig:RightHand",
+    toBone: "mixamorig:RightHandMiddle1",
+    radius: SELF_PENETRATION.radiusM.hand,
   },
   {
     name: "thigh:L",
@@ -289,18 +315,22 @@ const CAPSULE_SPECS: CapsuleSpec[] = [
  * 正当な近接・接続で常時オーバーラップするため検査から除外するペア。
  * 隣接関節（同一チェーン）と、解剖学的に常に近い体幹まわり。
  */
-const EXCLUDED_PAIRS = new Set(
+export const EXCLUDED_PAIRS = new Set(
   [
-    ["torso", "head"],
-    ["torso", "upperArm:L"],
-    ["torso", "upperArm:R"],
-    ["torso", "thigh:L"],
-    ["torso", "thigh:R"],
-    ["head", "upperArm:L"],
-    ["head", "upperArm:R"],
+    ["chest", "abdomen"],
+    ["abdomen", "pelvis"],
+    ["chest", "pelvis"],
+    ["chest", "head"],
+    ["chest", "upperArm:L"],
+    ["chest", "upperArm:R"],
+    ["pelvis", "thigh:L"],
+    ["pelvis", "thigh:R"],
+    ["abdomen", "thigh:L"],
+    ["abdomen", "thigh:R"],
     ["upperArm:L", "foreArm:L"],
     ["upperArm:R", "foreArm:R"],
-    ["thigh:L", "thigh:R"],
+    ["foreArm:L", "hand:L"],
+    ["foreArm:R", "hand:R"],
     ["thigh:L", "calf:L"],
     ["thigh:R", "calf:R"],
     ["calf:L", "foot:L"],
@@ -310,7 +340,7 @@ const EXCLUDED_PAIRS = new Set(
 
 /**
  * ポーズ適用済みスケルトンから体節カプセルを作る。
- * head は Head ボーンの子（HeadTop 等）があれば線分、無ければ点カプセル。
+ * head は Head ボーンの子（HeadTop 等）があれば線分、無ければ点カプセル（hand は toBone を明示指定するため対象外）。
  * 解決できない体節はスキップする（テスト用の簡易リグ対応）。
  */
 export const buildBodyCapsules = (root: THREE.Object3D): SegmentCapsule[] => {
