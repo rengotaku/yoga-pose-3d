@@ -103,9 +103,15 @@ export function applyWaivers(check, waivers) {
     }
   }
 
-  // 2. Penetration
+  // 2. Penetration（#128）: fail severity のみを違反対象とし、waiver も fail
+  // に対してのみ適用する。warn severity は pass 判定に影響しない情報表示
+  // として素通しする（sub A で EXCLUDED_PAIRS を隣接のみに縮小した結果、
+  // 新たに検出対象になった「触れ合いは正当だが深く食い込むと NG」なペアを
+  // warn 帯として吸収するための区分）。
+  const failPenetrations = (check.penetrations ?? []).filter((p) => p.severity === "fail");
+  const warnPenetrations = (check.penetrations ?? []).filter((p) => p.severity === "warn");
   const remainingPenetrations = [];
-  for (const p of check.penetrations ?? []) {
+  for (const p of failPenetrations) {
     const pairName = `${p.a} × ${p.b}`;
     const pairNameAlt = `${p.b} × ${p.a}`;
     const matched = penWaivers.find((w) => {
@@ -238,6 +244,7 @@ export function applyWaivers(check, waivers) {
   return {
     rom: remainingRom,
     penetrations: remainingPenetrations,
+    warnPenetrations,
     contacts: remainingContacts,
     palms: remainingPalms,
     photoAlignment: {
@@ -514,12 +521,17 @@ async function runCli() {
       }
     }
 
-    // 2. めり込み
-    if (check.penetrations.length === 0) {
-      console.log("  めり込み:   違反 0");
-    } else if (waivedRes.penetrations.length === 0 && waivedRes.waivedCounts.penetration > 0) {
-      const details = waivedRes.reportLines.filter((l) => l.includes("WAIVED") && l.includes("×")).join(", ").trim();
-      console.log(`  めり込み:   違反 0（${details || `WAIVED ${waivedRes.waivedCounts.penetration} 件`}）`);
+    // 2. めり込み（#128: fail が違反、warn は情報表示のみで pass に影響しない）
+    const totalFailPenetrations = (check.penetrations ?? []).filter(
+      (p) => p.severity === "fail"
+    ).length;
+    if (totalFailPenetrations === 0) {
+      if (waivedRes.waivedCounts.penetration > 0) {
+        const details = waivedRes.reportLines.filter((l) => l.includes("WAIVED") && l.includes("×")).join(", ").trim();
+        console.log(`  めり込み:   違反 0（${details || `WAIVED ${waivedRes.waivedCounts.penetration} 件`}）`);
+      } else {
+        console.log("  めり込み:   違反 0");
+      }
     } else {
       console.log(
         `  めり込み:   違反 ${waivedRes.penetrations.length} 件${
@@ -527,6 +539,14 @@ async function runCli() {
         }`
       );
       for (const p of waivedRes.penetrations) {
+        console.log(`    ${p.a} × ${p.b} 深さ ${(p.depthM * 100).toFixed(1)}cm`);
+      }
+    }
+    if (waivedRes.warnPenetrations.length > 0) {
+      console.log(
+        `  めり込み(WARN): ${waivedRes.warnPenetrations.length} 件（pass 判定に影響しない）`
+      );
+      for (const p of waivedRes.warnPenetrations) {
         console.log(`    ${p.a} × ${p.b} 深さ ${(p.depthM * 100).toFixed(1)}cm`);
       }
     }
@@ -653,7 +673,11 @@ async function runCli() {
       pose,
       tier,
       rom: { violations: waivedRes.rom.length, waived: waivedRes.waivedCounts.rom },
-      penetration: { violations: waivedRes.penetrations.length, waived: waivedRes.waivedCounts.penetration },
+      penetration: {
+        violations: waivedRes.penetrations.length,
+        warn: waivedRes.warnPenetrations.length,
+        waived: waivedRes.waivedCounts.penetration,
+      },
       contact: { violations: waivedRes.contacts.length, total: totalContacts, waived: waivedRes.waivedCounts.contact },
       palm: { violations: waivedRes.palms.length, total: totalPalms, waived: waivedRes.waivedCounts.palm },
       photoMatch: {

@@ -14,7 +14,7 @@ describe("waiver schema and validation (Case 1 ~ Case 8)", () => {
   // Case 1: waiver 無し = 従来通り
   it("Case 1: waiver 無し = 従来通り", () => {
     const check = createMockCheck({
-      penetrations: [{ a: "thigh:L", b: "calf:R", depthM: 0.03 }],
+      penetrations: [{ a: "thigh:L", b: "calf:R", depthM: 0.03, severity: "fail" }],
       contacts: [{ part: "hip", grounded: false, clearanceM: 0.1 }],
     });
     const result = applyWaivers(check, undefined);
@@ -27,7 +27,7 @@ describe("waiver schema and validation (Case 1 ~ Case 8)", () => {
   // Case 2: 該当ペアの penetration を waive
   it("Case 2: 該当ペアの penetration を waive", () => {
     const check = createMockCheck({
-      penetrations: [{ a: "thigh:L", b: "calf:R", depthM: 0.031 }],
+      penetrations: [{ a: "thigh:L", b: "calf:R", depthM: 0.031, severity: "fail" }],
     });
     const waivers = {
       penetration: { pair: "thigh:L × calf:R", reason: "交差脛の構造的帰結" },
@@ -43,8 +43,8 @@ describe("waiver schema and validation (Case 1 ~ Case 8)", () => {
   it("Case 3: waive で消えないペアが残っている場合は FAIL", () => {
     const check = createMockCheck({
       penetrations: [
-        { a: "thigh:L", b: "calf:R", depthM: 0.03 },
-        { a: "foot:L", b: "foot:R", depthM: 0.02 },
+        { a: "thigh:L", b: "calf:R", depthM: 0.03, severity: "fail" },
+        { a: "foot:L", b: "foot:R", depthM: 0.02, severity: "fail" },
       ],
     });
     const waivers = {
@@ -131,7 +131,7 @@ describe("waiver schema and validation (Case 1 ~ Case 8)", () => {
   it("Case 9: 各ゲートの waived カウントが正しく計算されること", () => {
     const check = createMockCheck({
       rom: [{ bone: "LeftUpLeg", axis: "x", valueDeg: 145, minDeg: -90, maxDeg: 90, excessDeg: 55 }],
-      penetrations: [{ a: "thigh:L", b: "calf:R", depthM: 0.03 }],
+      penetrations: [{ a: "thigh:L", b: "calf:R", depthM: 0.03, severity: "fail" }],
       contacts: [{ part: "hip", grounded: false, clearanceM: 0.2 }],
       palms: [{ side: "L", flat: false, tiltDeg: 15 }],
       photoAlignment: { status: "fail", meanDeg: 38.9, over: 1, coverage: 9, systems: 5, coverageFail: false, qualityFail: true },
@@ -253,6 +253,41 @@ describe("waiver schema and validation (Case 1 ~ Case 8)", () => {
     } catch (e) {
       expect(e.message).toMatch(/stability/);
     }
+  });
+
+  // 追加テスト（#128）: Case 16: warn severity の penetration は violation に数えず、
+  // waiver 未指定でも pass のまま warnPenetrations として返る
+  it("Case 16: warn severity の penetration は violation に数えず waiver 対象にもならない", () => {
+    const check = createMockCheck({
+      penetrations: [
+        { a: "chest", b: "foreArm:L", depthM: 0.03, severity: "warn" },
+        { a: "hand:L", b: "hand:R", depthM: 0.05, severity: "warn" },
+      ],
+    });
+    const result = applyWaivers(check, undefined);
+    expect(result.violation).toBe(false);
+    expect(result.penetrations.length).toBe(0);
+    expect(result.warnPenetrations.length).toBe(2);
+    expect(result.waivedCounts.penetration).toBe(0);
+  });
+
+  // 追加テスト（#128）: Case 17: fail と warn が混在する場合、fail のみが violation・waiver 対象になる
+  it("Case 17: fail/warn 混在時は fail のみ violation・waiver 対象になる", () => {
+    const check = createMockCheck({
+      penetrations: [
+        { a: "thigh:L", b: "calf:R", depthM: 0.05, severity: "fail" },
+        { a: "hand:L", b: "hand:R", depthM: 0.05, severity: "warn" },
+      ],
+    });
+    const waivers = {
+      penetration: { pair: "thigh:L × calf:R", reason: "交差脛の構造的帰結" },
+    };
+    const result = applyWaivers(check, waivers);
+    expect(result.violation).toBe(false);
+    expect(result.waivedCounts.penetration).toBe(1);
+    expect(result.penetrations.length).toBe(0);
+    expect(result.warnPenetrations.length).toBe(1);
+    expect(result.warnPenetrations[0].a).toBe("hand:L");
   });
 });
 

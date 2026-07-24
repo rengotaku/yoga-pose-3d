@@ -12,6 +12,7 @@ import {
   compareLandmarkPoses,
   computeContactClearances,
   detectSelfPenetrations,
+  isPenetrationPass,
 } from "./poseValidity";
 import { fuseLandmarks } from "./fusion";
 import { clampHingeJoints } from "./jointLimits";
@@ -295,6 +296,8 @@ export const PoseViewer3D: React.FC = () => {
               fitCameraToSkeleton();
               const rom = checkGoldenRom(golden);
               const penetrations = detectSelfPenetrations(buildBodyCapsules(mannequin));
+              // pass 判定は fail severity のみに反応する（warn は pass を落とさない、#128）
+              const penetrationPass = isPenetrationPass(penetrations);
               const contacts = computeContactClearances(
                 mannequin,
                 golden.contacts ?? [],
@@ -302,7 +305,15 @@ export const PoseViewer3D: React.FC = () => {
               );
               const palms = checkPalmsFlat(mannequin, golden.palmsDown ?? []);
               const stability = checkStability(mannequin, golden.contacts ?? [], FLOOR_Y);
-              return { rom, penetrations, contacts, palms, stability, unresolved };
+              return {
+                rom,
+                penetrations,
+                penetrationPass,
+                contacts,
+                palms,
+                stability,
+                unresolved,
+              };
             },
             compareLandmarks: (a: RawLandmark[], b: RawLandmark[]) =>
               compareLandmarkPoses(a, b),

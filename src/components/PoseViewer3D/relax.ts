@@ -209,14 +209,20 @@ export const relaxDownstream = (
   if (!contactAware) {
     applyAtStrength(strength);
   } else {
-    // baseline penetration 数を記録し、増えたら 1 手前の strength に戻して終了
-    const baseline = detectSelfPenetrations(buildBodyCapsules(mannequin)).length;
+    // baseline penetration 数を記録し、増えたら 1 手前の strength に戻して終了。
+    // #128 で detectSelfPenetrations が warn/fail 両方を返すようになったため、脱力の
+    // 停止判定は fail severity のみで数える (旧 contactToleranceM=0.03 と等価な意味論を維持)
+    const baseline = detectSelfPenetrations(buildBodyCapsules(mannequin)).filter(
+      (p) => p.severity === "fail"
+    ).length;
     let bestStrength = 0;
     for (let i = 1; i <= RELAX_CONTACT_STEPS; i++) {
       const s = (i / RELAX_CONTACT_STEPS) * strength;
       restoreOriginal();
       applyAtStrength(s);
-      const now = detectSelfPenetrations(buildBodyCapsules(mannequin)).length;
+      const now = detectSelfPenetrations(buildBodyCapsules(mannequin)).filter(
+        (p) => p.severity === "fail"
+      ).length;
       if (now > baseline) break;
       bestStrength = s;
     }

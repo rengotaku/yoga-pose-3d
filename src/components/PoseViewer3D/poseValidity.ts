@@ -132,8 +132,16 @@ export const checkGoldenRom = (golden: GoldenPose): RomViolation[] => {
 
 /**
  * 自己めり込み検出のパラメータ。半径はマネキンメッシュの目視実測に基づく
- * 概算値（m）。contactToleranceM はヨガポーズで正当な接触（胸前クロスの腕、
- * 組んだ脚）を違反にしないための許容侵入深さ。
+ * 概算値（m）。perPairToleranceM はヨガポーズで正当な接触（胸前クロスの腕、
+ * 組んだ脚）を違反にしないためのペア別許容侵入深さ（#128）。
+ *
+ * warn/fail の 2 段判定: depth が warnDefault（またはペア別 override の warn）
+ * を超えたら warning、failDefault（または override の fail）を超えたら fail。
+ * pass 判定は fail のみに反応し、warn は情報表示のみで pass を落とさない
+ * （sub A で EXCLUDED_PAIRS を隣接のみに縮小した結果、`chest–foreArm` や
+ * `thigh:L–thigh:R` のような「触れ合いは正当だが深く食い込むと NG」なペアが
+ * 検出対象になったため。初期値は sub A の実測に基づく経験値で、以降の校正は
+ * enhancement バックログで追う）。
  */
 export const SELF_PENETRATION = {
   radiusM: {
@@ -148,7 +156,20 @@ export const SELF_PENETRATION = {
     calf: 0.055,
     foot: 0.04,
   },
-  contactToleranceM: 0.03,
+  perPairToleranceM: {
+    warnDefault: 0.01,
+    failDefault: 0.03,
+    overrides: {
+      "chest|foreArm:L": { warn: 0.02, fail: 0.06 }, // 合掌前傾での前腕–胸
+      "chest|foreArm:R": { warn: 0.02, fail: 0.06 },
+      "abdomen|thigh:L": { warn: 0.02, fail: 0.06 }, // happy baby / knee-to-chest（現状 EXCLUDED、将来外す時に備えて定義）
+      "abdomen|thigh:R": { warn: 0.02, fail: 0.06 },
+      "thigh:L|thigh:R": { warn: 0.02, fail: 0.16 }, // cross-leg 系（実測 14.0cm）
+      "hand:L|hand:R": { warn: 0.02, fail: 0.1 }, // 合掌（実測 8.0cm）
+      "foreArm:L|hand:R": { warn: 0.02, fail: 0.07 }, // 腕組み（実測 5.0cm）
+      "foreArm:R|hand:L": { warn: 0.02, fail: 0.07 }, // 腕組み（実測 5.0cm）
+    },
+  },
 } as const;
 
 export type SegmentCapsule = {
@@ -382,16 +403,31 @@ export type Penetration = {
   b: string;
   /** 表面同士の侵入深さ（m。接触許容を差し引く前の生値） */
   depthM: number;
+  /** warn: 情報表示のみ（pass 判定に影響しない） / fail: 違反（#128） */
+  severity: "warn" | "fail";
+};
+
+/** ペア名（ソート済みキー）から warn/fail の許容侵入深さを引く（#128） */
+const toleranceForPair = (a: string, b: string): { warn: number; fail: number } => {
+  const key = [a, b].sort().join("|");
+  const override = (
+    SELF_PENETRATION.perPairToleranceM.overrides as Record<
+      string,
+      { warn: number; fail: number }
+    >
+  )[key];
+  return {
+    warn: override?.warn ?? SELF_PENETRATION.perPairToleranceM.warnDefault,
+    fail: override?.fail ?? SELF_PENETRATION.perPairToleranceM.failDefault,
+  };
 };
 
 /**
- * カプセル同士の相互侵入を検出する。深さが contactToleranceM を超えるペア
- * のみ違反として返す（ヨガの正当な接触を許容するため）。
+ * カプセル同士の相互侵入を検出する（#128）。深さがペア別の warn 閾値を超えたら
+ * warning、fail 閾値を超えたら fail として返す。warn 閾値以下（正当な接触）は
+ * 結果に含めない。
  */
-export const detectSelfPenetrations = (
-  capsules: SegmentCapsule[],
-  contactToleranceM: number = SELF_PENETRATION.contactToleranceM
-): Penetration[] => {
+export const detectSelfPenetrations = (capsules: SegmentCapsule[]): Penetration[] => {
   const out: Penetration[] = [];
   for (let i = 0; i < capsules.length; i++) {
     for (let j = i + 1; j < capsules.length; j++) {
@@ -401,13 +437,20 @@ export const detectSelfPenetrations = (
       if (EXCLUDED_PAIRS.has(key)) continue;
       const dist = segmentDistance(ca.a, ca.b, cb.a, cb.b);
       const depth = ca.radius + cb.radius - dist;
-      if (depth > contactToleranceM) {
-        out.push({ a: ca.name, b: cb.name, depthM: depth });
+      const { warn, fail } = toleranceForPair(ca.name, cb.name);
+      if (depth > fail) {
+        out.push({ a: ca.name, b: cb.name, depthM: depth, severity: "fail" });
+      } else if (depth > warn) {
+        out.push({ a: ca.name, b: cb.name, depthM: depth, severity: "warn" });
       }
     }
   }
   return out.sort((x, y) => y.depthM - x.depthM);
 };
+
+/** pass 判定は fail severity のみに反応する（warn は pass を落とさない、#128） */
+export const isPenetrationPass = (penetrations: Penetration[]): boolean =>
+  penetrations.filter((p) => p.severity === "fail").length === 0;
 
 /**
  * 接地ゲート（#90）。groundMannequin は最下点 1 点しか床に合わせないため、

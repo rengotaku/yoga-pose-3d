@@ -19,6 +19,7 @@ vi.mock("three", async (importOriginal) => {
 import { GoldenViewerPage } from "./GoldenViewerPage";
 import { GOLDEN_POSES } from "./goldenPoses";
 import * as skinnedMannequin from "../components/PoseViewer3D/skinnedMannequin";
+import * as poseValidity from "../components/PoseViewer3D/poseValidity";
 
 vi.mock("../components/PoseViewer3D/skinnedMannequin", async (importOriginal) => {
   const mod =
@@ -26,6 +27,17 @@ vi.mock("../components/PoseViewer3D/skinnedMannequin", async (importOriginal) =>
   return {
     ...mod,
     loadMannequin: vi.fn(),
+  };
+});
+
+// #128: detectSelfPenetrations を warn-only の合成結果に差し替えて、gateReport の
+// pass 表示（めり込み(fail)）が warn では落ちないことを検証する
+vi.mock("../components/PoseViewer3D/poseValidity", async (importOriginal) => {
+  const mod =
+    await importOriginal<typeof import("../components/PoseViewer3D/poseValidity")>();
+  return {
+    ...mod,
+    detectSelfPenetrations: vi.fn(mod.detectSelfPenetrations),
   };
 });
 
@@ -130,5 +142,31 @@ describe("GoldenViewerPage", () => {
         ).__stabilityDebug?.isMounted()
       ).toBe(false);
     });
+  });
+
+  // 追加テスト（#128）: warn severity のみの penetration では pass 表示（緑）が
+  // 落ちないことを、編集モードのゲート表示で確認する
+  it("keeps the penetration pass indicator green when only warn-severity penetrations exist (#128)", async () => {
+    vi.mocked(poseValidity.detectSelfPenetrations).mockReturnValue([
+      { a: "thigh:L", b: "thigh:R", depthM: 0.05, severity: "warn" },
+    ]);
+
+    render(<GoldenViewerPage />);
+
+    const editButton = await screen.findByRole("button", { name: "編集: OFF" });
+    fireEvent.click(editButton);
+
+    await waitFor(
+      () => {
+        const failLine = screen.getByText(/めり込み\(fail\)/);
+        expect(failLine.textContent).toContain("0 件");
+        expect(failLine.className).toContain("text-emerald-300");
+      },
+      { timeout: 2000 }
+    );
+
+    const warnLine = screen.getByText(/めり込み\(warn\)/);
+    expect(warnLine.textContent).toContain("1 件");
+    expect(warnLine.className).toContain("text-amber-300");
   });
 });

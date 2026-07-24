@@ -21,7 +21,26 @@ import {
   computeSupportPolygon,
   checkStability,
   signedDistanceToPolygon,
+  isPenetrationPass,
+  type Penetration,
 } from "./poseValidity";
+
+/** #128 テスト用の単純なカプセル生成ヘルパ（既存 describe 内の同等ヘルパとは別スコープ） */
+const makeCapsule = (
+  name: string,
+  ax: number,
+  ay: number,
+  az: number,
+  bx: number,
+  by: number,
+  bz: number,
+  radius: number
+): SegmentCapsule => ({
+  name,
+  a: new THREE.Vector3(ax, ay, az),
+  b: new THREE.Vector3(bx, by, bz),
+  radius,
+});
 
 describe("romLimitFor", () => {
   it("mirrors Y/Z ranges for the right side and keeps X", () => {
@@ -812,5 +831,118 @@ describe("ケース 5: EXCLUDED_PAIRS に隣接ペアが残っている", () => 
       const key = p.sort().join("|");
       expect(EXCLUDED_PAIRS.has(key)).toBe(true);
     }
+  });
+});
+
+describe("#128 ケース 1: Penetration 型に severity が追加されている", () => {
+  it("accepts severity 'warn' | 'fail' alongside the existing a/b/depthM fields", () => {
+    const warnPen: Penetration = {
+      a: "chest",
+      b: "foreArm:L",
+      depthM: 0.02,
+      severity: "warn",
+    };
+    const failPen: Penetration = {
+      a: "chest",
+      b: "foreArm:L",
+      depthM: 0.07,
+      severity: "fail",
+    };
+    expect(warnPen.severity).toBe("warn");
+    expect(failPen.severity).toBe("fail");
+    expect(warnPen.a).toBe("chest");
+    expect(warnPen.b).toBe("foreArm:L");
+  });
+});
+
+describe("#128 ケース 2: SELF_PENETRATION.perPairToleranceM の構造", () => {
+  it("defines warnDefault/failDefault and overrides for the known absorbed pairs", () => {
+    expect(SELF_PENETRATION.perPairToleranceM.warnDefault).toBe(0.01);
+    expect(SELF_PENETRATION.perPairToleranceM.failDefault).toBe(0.03);
+    const overrides = SELF_PENETRATION.perPairToleranceM.overrides as Record<
+      string,
+      { warn: number; fail: number }
+    >;
+    for (const key of [
+      "thigh:L|thigh:R",
+      "hand:L|hand:R",
+      "foreArm:L|hand:R",
+      "foreArm:R|hand:L",
+    ]) {
+      expect(overrides[key]).toBeDefined();
+      expect(typeof overrides[key].warn).toBe("number");
+      expect(typeof overrides[key].fail).toBe("number");
+    }
+  });
+});
+
+describe("#128 ケース 3: detectSelfPenetrations が warn/fail/許容の 3 帯を判定する", () => {
+  // chest（半径 0.13）× calf:L（半径 0.055）: overrides 未該当ペアで
+  // warnDefault(0.01) / failDefault(0.03) がそのまま適用されることを確認する
+  it("returns severity 'warn' when depth is within the warn band (default tolerance)", () => {
+    const caps = [
+      makeCapsule("chest", 0, 0, 0, 0, 0, 0, SELF_PENETRATION.radiusM.chest),
+      // 半径和 0.185、depth = 0.185 - dist = 0.02 になるよう dist=0.165
+      makeCapsule("calf:L", 0.165, 0, 0, 0.165, 0, 0, SELF_PENETRATION.radiusM.calf),
+    ];
+    const pens = detectSelfPenetrations(caps);
+    expect(pens).toHaveLength(1);
+    expect(pens[0].depthM).toBeCloseTo(0.02, 5);
+    expect(pens[0].severity).toBe("warn");
+  });
+
+  it("returns severity 'fail' when depth exceeds the fail band (default tolerance)", () => {
+    const caps = [
+      makeCapsule("chest", 0, 0, 0, 0, 0, 0, SELF_PENETRATION.radiusM.chest),
+      // depth = 0.185 - dist = 0.05 になるよう dist=0.135
+      makeCapsule("calf:L", 0.135, 0, 0, 0.135, 0, 0, SELF_PENETRATION.radiusM.calf),
+    ];
+    const pens = detectSelfPenetrations(caps);
+    expect(pens).toHaveLength(1);
+    expect(pens[0].depthM).toBeCloseTo(0.05, 5);
+    expect(pens[0].severity).toBe("fail");
+  });
+
+  it("omits the pair entirely when depth is below the warn threshold (allowed contact)", () => {
+    const caps = [
+      makeCapsule("chest", 0, 0, 0, 0, 0, 0, SELF_PENETRATION.radiusM.chest),
+      // depth = 0.185 - dist = 0.005 になるよう dist=0.18
+      makeCapsule("calf:L", 0.18, 0, 0, 0.18, 0, 0, SELF_PENETRATION.radiusM.calf),
+    ];
+    expect(detectSelfPenetrations(caps)).toHaveLength(0);
+  });
+});
+
+describe("#128 ケース 4: perPairToleranceM.overrides の優先適用", () => {
+  it("uses override tolerances instead of defaults for thigh:L × thigh:R", () => {
+    const caps = [
+      makeCapsule("thigh:L", 0, 0, 0, 0, 0, 0, SELF_PENETRATION.radiusM.thigh),
+      // 半径和 0.14、depth = 0.14 - dist = 0.10 になるよう dist=0.04
+      // default failDefault(0.03) なら fail になるはずの深さだが、
+      // override fail=0.16 が優先されれば warn のまま
+      makeCapsule("thigh:R", 0.04, 0, 0, 0.04, 0, 0, SELF_PENETRATION.radiusM.thigh),
+    ];
+    const pens = detectSelfPenetrations(caps);
+    expect(pens).toHaveLength(1);
+    expect(pens[0].depthM).toBeCloseTo(0.1, 5);
+    expect(pens[0].severity).toBe("warn");
+  });
+});
+
+describe("#128 ケース 5: pass 判定は fail severity のみに反応する", () => {
+  it("isPenetrationPass returns true when only warn-severity penetrations exist", () => {
+    const penetrations: Penetration[] = [
+      { a: "chest", b: "foreArm:L", depthM: 0.03, severity: "warn" },
+      { a: "hand:L", b: "hand:R", depthM: 0.05, severity: "warn" },
+    ];
+    expect(isPenetrationPass(penetrations)).toBe(true);
+  });
+
+  it("isPenetrationPass returns false when at least one fail-severity penetration exists", () => {
+    const penetrations: Penetration[] = [
+      { a: "chest", b: "foreArm:L", depthM: 0.03, severity: "warn" },
+      { a: "thigh:L", b: "calf:R", depthM: 0.07, severity: "fail" },
+    ];
+    expect(isPenetrationPass(penetrations)).toBe(false);
   });
 });

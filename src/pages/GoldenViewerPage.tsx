@@ -29,6 +29,7 @@ import {
   computeCOM,
   computeContactClearances,
   detectSelfPenetrations,
+  isPenetrationPass,
   romLimitFor,
   type ContactClearance,
   type PalmCheck,
@@ -1037,13 +1038,21 @@ export function GoldenViewerPage() {
                 </p>
                 <p
                   className={
-                    gateReport.penetrations.length === 0
+                    isPenetrationPass(gateReport.penetrations)
                       ? "text-emerald-300"
                       : "text-red-300"
                   }
                 >
-                  めり込み: {gateReport.penetrations.length} 件
+                  めり込み(fail):{" "}
+                  {gateReport.penetrations.filter((p) => p.severity === "fail").length} 件
                 </p>
+                {gateReport.penetrations.some((p) => p.severity === "warn") && (
+                  <p className="text-amber-300">
+                    めり込み(warn):{" "}
+                    {gateReport.penetrations.filter((p) => p.severity === "warn").length}{" "}
+                    件
+                  </p>
+                )}
                 {gateReport.contacts.map((c) => (
                   <p
                     key={c.part}
