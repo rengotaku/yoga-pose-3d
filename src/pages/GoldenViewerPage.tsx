@@ -37,6 +37,7 @@ import {
   type RomViolation,
   type StabilityResult,
 } from "../components/PoseViewer3D/poseValidity";
+import { applyNarrowPhaseRefinement } from "../components/PoseViewer3D/penetrationNarrowPhase";
 import { clampAxisToRom, romRangeFor } from "../components/PoseViewer3D/romClamp";
 import { collectRelaxChain, relaxDownstream } from "../components/PoseViewer3D/relax";
 import { calculateCameraFit } from "../components/PoseViewer3D/cameraFit";
@@ -111,6 +112,7 @@ type GateReport = {
   penetrations: Penetration[];
   contacts: ContactClearance[];
   palms: PalmCheck[];
+  narrowPhaseMs?: number;
 };
 
 /** 重心/支持面の可視化（#119）に使う直近の計算結果。comY は COM の実際の高さ
@@ -640,11 +642,16 @@ export function GoldenViewerPage() {
     if (!current || !mannequin) return;
     groundMannequin(mannequin, FLOOR_Y);
     const editedGolden: GoldenPose = { ...current, rotations: rotationsState };
+    const broad = detectSelfPenetrations(buildBodyCapsules(mannequin));
+    const tNarrowStart = performance.now();
+    const penetrations = applyNarrowPhaseRefinement(broad, mannequin);
+    const narrowPhaseMs = performance.now() - tNarrowStart;
     setGateReport({
       romViolations: checkGoldenRom(editedGolden),
-      penetrations: detectSelfPenetrations(buildBodyCapsules(mannequin)),
+      penetrations,
       contacts: computeContactClearances(mannequin, current.contacts ?? [], FLOOR_Y),
       palms: checkPalmsFlat(mannequin, current.palmsDown ?? []),
+      narrowPhaseMs,
     });
     // 重心/支持面（#119）: ボーン回転（ギズモ・スライダー・脱力・undo/redo）の
     // たびに、ゲート再計算と同じタイミング（接地済み）で追従させる

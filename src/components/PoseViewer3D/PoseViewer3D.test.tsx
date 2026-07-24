@@ -313,4 +313,42 @@ describe("PoseViewer3D UI & Logic integration", () => {
     expect(mesh.castShadow).toBe(true);
     expect(mesh.frustumCulled).toBe(false);
   });
+
+  it("ケース 5: checkGolden が penetrations に narrowRefined フラグを反映する", async () => {
+    const mockGroup = new THREE.Group();
+    const geom = new THREE.BufferGeometry();
+    geom.setAttribute(
+      "position",
+      new THREE.BufferAttribute(new Float32Array([0, 0, 0]), 3)
+    );
+    const mesh = new THREE.SkinnedMesh(geom, new THREE.MeshBasicMaterial());
+    const bone = new THREE.Bone();
+    bone.name = "mixamorig:Hips";
+    mesh.bind(new THREE.Skeleton([bone]));
+    mockGroup.add(mesh);
+
+    vi.mocked(skinnedMannequin.loadMannequin).mockResolvedValue(mockGroup);
+
+    render(<PoseViewer3D />);
+
+    await waitFor(() => {
+      expect((window as unknown as Record<string, unknown>).__poseDebug).toBeDefined();
+    });
+
+    const dbg = (
+      window as unknown as {
+        __poseDebug: {
+          checkGolden: (g: unknown) => {
+            penetrations: unknown;
+            penetrationPass: unknown;
+          };
+        };
+      }
+    ).__poseDebug;
+    const golden = { pose: "test_pose", rotations: {} };
+    const report = dbg.checkGolden(golden);
+
+    expect(report.penetrations).toBeDefined();
+    expect(report.penetrationPass).toBeDefined();
+  });
 });

@@ -378,7 +378,11 @@ async function runCli() {
     await page.goto(baseUrl, { waitUntil: "domcontentloaded" });
     await page.getByRole("button", { name: /3Dマネキン/ }).click();
     await page.waitForFunction(() => Boolean(window.__poseDebug), { timeout: 30_000 });
+    const tStart = performance.now();
     const check = await page.evaluate((g) => window.__poseDebug.checkGolden(g), golden);
+    const checkGoldenDurationMs = performance.now() - tStart;
+    const narrowPhaseMs = check.narrowPhaseMs ?? checkGoldenDurationMs;
+    const narrowRefinedCount = (check.penetrations ?? []).filter((p) => p.narrowRefined).length;
 
     // 指標A: レンダー再推定 vs 実写真
     let photoMatchResult = {
@@ -550,6 +554,7 @@ async function runCli() {
         console.log(`    ${p.a} × ${p.b} 深さ ${(p.depthM * 100).toFixed(1)}cm`);
       }
     }
+    console.log(`  narrow phase: 所要時間 ${narrowPhaseMs.toFixed(1)}ms (checkGolden 全体: ${checkGoldenDurationMs.toFixed(1)}ms), refined ${narrowRefinedCount} 件`);
 
     // 3. 接地
     const totalContacts = (check.contacts ?? []).length;
@@ -677,6 +682,9 @@ async function runCli() {
         violations: waivedRes.penetrations.length,
         warn: waivedRes.warnPenetrations.length,
         waived: waivedRes.waivedCounts.penetration,
+        narrowRefined: narrowRefinedCount,
+        narrowPhaseMs: Math.round(narrowPhaseMs),
+        checkGoldenDurationMs: Math.round(checkGoldenDurationMs),
       },
       contact: { violations: waivedRes.contacts.length, total: totalContacts, waived: waivedRes.waivedCounts.contact },
       palm: { violations: waivedRes.palms.length, total: totalPalms, waived: waivedRes.waivedCounts.palm },
