@@ -29,3 +29,6 @@ e2e/output/
 # ゴールデン指標の実写真ローカル絶対パス上書き（ADR 0010 で写真自体は in-repo 管理へ移行。
 # sources.local.json はローカルマシン固有の絶対パス上書き用エスケープハッチ）
 e2e/golden/sources.local.json
+
+# Playwright
+test-results/

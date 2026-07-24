@@ -93,6 +93,23 @@
   /golden 編集画面（`GoldenViewerPage.tsx` + `stabilityViz.ts`）では
   COM マーカーと支持多角形をライブ描画し、色帯（safe/warn/danger）で
   安定度を可視化する。物理シミュ（rapier/cannon）は決定論性を優先して不採用。
+- **自己貫通判定（`penetration` ゲート・ADR 0012, #126）**: capsule broad phase +
+  skinned mesh narrow phase の **2 段判定**。broad は `poseValidity.ts` の
+  `detectSelfPenetrations` が 16 capsule（`chest / abdomen / pelvis` 3 分割 +
+  `hand:L/R` 追加 + 既存 head/upperArm/foreArm/thigh/calf/foot）と
+  `SELF_PENETRATION.perPairToleranceM`（warnDefault=0.01 / failDefault=0.03 +
+  組脚・合掌等の pair-specific overrides）で **3 帯判定**（`allowed < warn < fail`）。
+  narrow は `penetrationNarrowPhase.ts` の `applyNarrowPhaseRefinement` が
+  broad の fail 帯 + fail 直下 5mm warn のみ再判定し、実表面距離が正なら
+  `fail → warn` に格下げ（`Penetration.narrowRefined: true`）。
+  pass 判定は `isPenetrationPass` が **fail 件数 === 0** のみで判定
+  （warn は情報表示、pass 判定不参加）。/golden 編集画面では TransformControls と
+  IK ドラッグに `clampInput.ts` の `tryApplyWithClamp` を挟み、fail 件数が
+  増える入力を二分探索（broad phase のみ、60fps 予算）で clamp（壁挙動）。
+  clamp 発火時は赤フラッシュ + `blockedPairs` UI パネル。
+  cross-seat の `waivers.penetration` は本強化により剥がし済み（機能で pass）。
+  全面 SDF / CCD / topological penetration 検知は本 ADR のスコープ外
+  （enhancement バックログ）。
 - **注意**: 実写真は `e2e/golden/photos/`（committed、ADR 0010）に配置し、
   `e2e/golden/sources.json`（committed）が pose → 写真パスの default 対応表になる。
   `sources.local.json`（gitignore 済み）は別マシン絶対パスの上書きに使うエスケープ
