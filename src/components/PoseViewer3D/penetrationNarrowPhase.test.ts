@@ -113,8 +113,8 @@ describe("ケース 2: applyNarrowPhaseRefinement が broad pass ペアには na
     // ペア2: fail 帯 -5mm 以内の warn (depthM = 0.026 >= fail 0.03 - 0.005 = 0.025)
     // ペア3: fail 帯まで 10mm 以上余裕のある warn (depthM = 0.015 < 0.025)
     const pens: Penetration[] = [
-      { a: "chest", b: "foreArm:L", depthM: 0.035, severity: "fail" },
-      { a: "thigh:L", b: "calf:R", depthM: 0.026, severity: "warn" },
+      { a: "pelvis", b: "hand:L", depthM: 0.035, severity: "fail" },
+      { a: "foreArm:L", b: "calf:R", depthM: 0.026, severity: "warn" },
       { a: "upperArm:L", b: "thigh:R", depthM: 0.015, severity: "warn" },
     ];
 
@@ -135,7 +135,7 @@ describe("ケース 2: applyNarrowPhaseRefinement が broad pass ペアには na
 describe("ケース 3: narrow phase 結果が severity を格下げする", () => {
   it("broad phase で fail 判定だったペアで narrow 表面距離 > 0 の場合、warn へ格下げ", () => {
     const pens: Penetration[] = [
-      { a: "thigh:L", b: "calf:R", depthM: 0.04, severity: "fail" },
+      { a: "foreArm:L", b: "calf:R", depthM: 0.04, severity: "fail" },
     ];
 
     const spy = vi.spyOn(narrowModule, "narrowPhaseDistance").mockReturnValue(0.005); // > 0
@@ -153,7 +153,7 @@ describe("ケース 3: narrow phase 結果が severity を格下げする", () =
 describe("ケース 4: narrow phase 結果が「表面距離 ≤ 0 かつ深さが fail 閾値超」なら fail 維持", () => {
   it("broad phase fail かつ narrow 結果が交差判定 (負値) の場合、fail を維持", () => {
     const pens: Penetration[] = [
-      { a: "thigh:L", b: "calf:R", depthM: 0.04, severity: "fail" },
+      { a: "foreArm:L", b: "calf:R", depthM: 0.04, severity: "fail" },
     ];
 
     const spy = vi.spyOn(narrowModule, "narrowPhaseDistance").mockReturnValue(-0.01); // <= 0
