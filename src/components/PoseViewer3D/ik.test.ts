@@ -395,4 +395,42 @@ describe("applyContactIK", () => {
     expect(knee.y).toBeCloseTo(floorY + CONTACT_IK.kneeClearanceM, 2);
     expect(ankle.y).toBeCloseTo(knee.y, 2);
   });
+
+  it("ケース 7: IK ドラッグ統合 (IK.test.ts で回帰)", async () => {
+    const clampModule = await import("./clampInput");
+    const spy = vi.spyOn(clampModule, "tryApplyWithClamp");
+
+    const { scene, thigh, calf, foot } = buildKneelingRig();
+    thigh.userData.stdName = "LeftUpLeg";
+    thigh.name = "mixamorig:LeftUpLeg";
+    calf.userData.stdName = "LeftLeg";
+    calf.name = "mixamorig:LeftLeg";
+    foot.userData.stdName = "LeftFoot";
+    foot.name = "mixamorig:LeftFoot";
+
+    scene.updateMatrixWorld(true);
+
+    const floorY = -0.5;
+    applyContactIK(scene, kneelingLandmarks(), floorY);
+
+    // 1. tryApplyWithClamp が実際に呼び出されたこと（中核 DoD）の確認
+    expect(spy).toHaveBeenCalled();
+
+    // 2. reject シナリオ: spy が { accepted: false, ... } を返す場合に 1 step 手前（safe位置）へ clamp されること
+    let factorApplied = -1;
+    spy.mockImplementation((_mannequin, applyDelta) => {
+      factorApplied = 0.5;
+      applyDelta(0.5);
+      return {
+        accepted: false,
+        blockedPairs: [{ a: "thigh:L", b: "chest" }],
+      };
+    });
+
+    applyContactIK(scene, kneelingLandmarks(), floorY);
+    expect(spy).toHaveBeenCalled();
+    expect(factorApplied).toBe(0.5);
+
+    spy.mockRestore();
+  });
 });

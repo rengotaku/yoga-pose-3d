@@ -38,6 +38,7 @@ import {
   type StabilityResult,
 } from "../components/PoseViewer3D/poseValidity";
 import { applyNarrowPhaseRefinement } from "../components/PoseViewer3D/penetrationNarrowPhase";
+import { tryApplyWithClamp } from "../components/PoseViewer3D/clampInput";
 import { clampAxisToRom, romRangeFor } from "../components/PoseViewer3D/romClamp";
 import { collectRelaxChain, relaxDownstream } from "../components/PoseViewer3D/relax";
 import { calculateCameraFit } from "../components/PoseViewer3D/cameraFit";
@@ -197,6 +198,18 @@ export function GoldenViewerPage() {
     createEditHistory()
   );
   const [copyStatus, setCopyStatus] = useState<"idle" | "copied" | "error">("idle");
+  const [blockedPairs, setBlockedPairs] = useState<{ a: string; b: string }[]>([]);
+  const [isFlashingRed, setIsFlashingRed] = useState(false);
+  const flashTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const dragStartBoneQuatRef = useRef<THREE.Quaternion | null>(null);
+
+  const triggerRedFlash = useCallback(() => {
+    setIsFlashingRed(true);
+    if (flashTimerRef.current) clearTimeout(flashTimerRef.current);
+    flashTimerRef.current = setTimeout(() => {
+      setIsFlashingRed(false);
+    }, 300);
+  }, []);
   const [gateReport, setGateReport] = useState<GateReport | null>(null);
   // 脱力モード（#110）: 選択ボーン以下を重力方向へ整列するときの強度と、指を対象に含めるか
   const [relaxStrength, setRelaxStrength] = useState(0.7);
@@ -264,6 +277,9 @@ export function GoldenViewerPage() {
       if (controlsRef.current) controlsRef.current.enabled = !dragging;
       if (dragging) {
         dragStartRotationsRef.current = rotationsStateRef.current;
+        setBlockedPairs([]);
+        const bone = transformControls.object as THREE.Bone | undefined;
+        dragStartBoneQuatRef.current = bone ? bone.quaternion.clone() : null;
         return;
       }
       const before = dragStartRotationsRef.current;
@@ -291,27 +307,48 @@ export function GoldenViewerPage() {
       if (!bone) return;
       const stdName = bone.userData.stdName as string | undefined;
       const bind = initialQuatsRef.current.get(bone.name);
-      if (!stdName || !bind || !romLimitFor(stdName)) return;
-      const offset = bind.clone().invert().multiply(bone.quaternion);
-      const euler = new THREE.Euler().setFromQuaternion(offset, "XYZ");
-      const deg = [
-        THREE.MathUtils.radToDeg(euler.x),
-        THREE.MathUtils.radToDeg(euler.y),
-        THREE.MathUtils.radToDeg(euler.z),
-      ];
-      const clamped = EULER_AXES.map(({ index, key }) =>
-        clampAxisToRom(stdName, key, deg[index])
-      );
-      if (clamped.every((v, i) => Math.abs(v - deg[i]) < 1e-6)) return;
-      const clampedQuat = new THREE.Quaternion().setFromEuler(
-        new THREE.Euler(
-          THREE.MathUtils.degToRad(clamped[0]),
-          THREE.MathUtils.degToRad(clamped[1]),
-          THREE.MathUtils.degToRad(clamped[2]),
-          "XYZ"
-        )
-      );
-      bone.quaternion.copy(bind).multiply(clampedQuat);
+      if (stdName && bind && romLimitFor(stdName)) {
+        const offset = bind.clone().invert().multiply(bone.quaternion);
+        const euler = new THREE.Euler().setFromQuaternion(offset, "XYZ");
+        const deg = [
+          THREE.MathUtils.radToDeg(euler.x),
+          THREE.MathUtils.radToDeg(euler.y),
+          THREE.MathUtils.radToDeg(euler.z),
+        ];
+        const clamped = EULER_AXES.map(({ index, key }) =>
+          clampAxisToRom(stdName, key, deg[index])
+        );
+        if (!clamped.every((v, i) => Math.abs(v - deg[i]) < 1e-6)) {
+          const clampedQuat = new THREE.Quaternion().setFromEuler(
+            new THREE.Euler(
+              THREE.MathUtils.degToRad(clamped[0]),
+              THREE.MathUtils.degToRad(clamped[1]),
+              THREE.MathUtils.degToRad(clamped[2]),
+              "XYZ"
+            )
+          );
+          bone.quaternion.copy(bind).multiply(clampedQuat);
+        }
+      }
+
+      // 編集時貫通 clamp (sub E)
+      const mannequin = mannequinRef.current;
+      if (mannequin) {
+        const startQuat = dragStartBoneQuatRef.current ?? bone.quaternion.clone();
+        const targetQuat = bone.quaternion.clone();
+
+        const clampRes = tryApplyWithClamp(mannequin, (factor) => {
+          bone.quaternion.copy(startQuat).slerp(targetQuat, factor);
+        });
+
+        if (!clampRes.accepted) {
+          triggerRedFlash();
+          setBlockedPairs(clampRes.blockedPairs);
+        } else {
+          dragStartBoneQuatRef.current = bone.quaternion.clone();
+          setBlockedPairs([]);
+        }
+      }
     };
     transformControls.addEventListener("objectChange", handleObjectChange);
 
@@ -513,6 +550,7 @@ export function GoldenViewerPage() {
       stabilityViz.unmount();
       stabilityVizRef.current = null;
       sceneRef.current = null;
+      if (flashTimerRef.current) clearTimeout(flashTimerRef.current);
       if (import.meta.env.DEV) {
         delete (window as unknown as Record<string, unknown>).__stabilityDebug;
       }
@@ -806,6 +844,12 @@ export function GoldenViewerPage() {
 
   return (
     <div className="relative w-screen h-screen">
+      {isFlashingRed && (
+        <div
+          data-testid="red-flash"
+          className="absolute inset-0 bg-red-500/30 pointer-events-none z-50 animate-pulse"
+        />
+      )}
       <div ref={mountRef} className="absolute inset-0" />
       <div className="absolute top-4 left-4 flex flex-col gap-2 max-w-xs max-h-[92vh] overflow-y-auto pr-1">
         <h1 className="text-white text-lg font-semibold drop-shadow">
@@ -816,7 +860,10 @@ export function GoldenViewerPage() {
             <button
               key={g.pose}
               type="button"
-              onClick={() => setSelected(g.pose)}
+              onClick={() => {
+                setBlockedPairs([]);
+                setSelected(g.pose);
+              }}
               className={`px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${
                 g.pose === selected
                   ? "bg-blue-500 text-white"
@@ -829,7 +876,10 @@ export function GoldenViewerPage() {
         </div>
         <button
           type="button"
-          onClick={() => setEditMode((v) => !v)}
+          onClick={() => {
+            setBlockedPairs([]);
+            setEditMode((v) => !v);
+          }}
           className={`self-start px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${
             editMode
               ? "bg-amber-500 text-white"
@@ -1074,6 +1124,19 @@ export function GoldenViewerPage() {
                     className={p.flat ? "text-emerald-300" : "text-red-300"}
                   >
                     手のひら {p.side}: {p.tiltDeg.toFixed(1)}°
+                  </p>
+                ))}
+              </div>
+            )}
+            {blockedPairs.length > 0 && (
+              <div
+                data-testid="blocked-pairs"
+                className="flex flex-col gap-1 border-t border-red-500/40 pt-2 text-red-300"
+              >
+                <p className="font-semibold text-xs text-red-400">編集制限 (clamp)</p>
+                {blockedPairs.map((pair, idx) => (
+                  <p key={`${pair.a}-${pair.b}-${idx}`} className="text-xs font-mono">
+                    clamp: {pair.a} × {pair.b}
                   </p>
                 ))}
               </div>
